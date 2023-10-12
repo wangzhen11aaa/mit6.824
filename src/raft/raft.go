@@ -609,9 +609,6 @@ func (rf *Raft) initElectionRequest(rq *RequestVoteArgs) {
 }
 
 func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	rf.currentTerm += 1
 
 	// If the follower timeout, then we need not care about who is the leader.
@@ -628,6 +625,13 @@ func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
 
 func (rf *Raft) launchElection() {
 	// We probably should store some value on the stack, in case other goroutines change the value to stop this election, for example it has voted for other peer, during this election.
+	rf.mu.Lock()
+
+	// Double-check
+	if rf.role != Candidate {
+		defer rf.mu.Unlock()
+		return
+	}
 
 	var currentTerm int
 	rq := RequestVoteArgs{}
@@ -642,6 +646,7 @@ func (rf *Raft) launchElection() {
 		<-rf.voteChannel
 	}
 
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -717,6 +722,8 @@ func (rf *Raft) processFailedRequest(typ int, updatedTerm int) {
 
 			rf.votedSuccessChannel <- false
 			rf.reElectionForFollower = false
+		} else { // If rf.role has changed to Follower, Do nothing, because the unbuffered votedSuccessChannel not used.
+
 		}
 	} else {
 		rf.appendSuccessChannel <- false

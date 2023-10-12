@@ -326,7 +326,7 @@ func (rf *Raft) sendAppendEntries(server int, args *RequestAppendEntriesArgs, re
 }
 
 func (rf *Raft) becomeFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
-	DPrintf("%v 's [current role: %v to Follower]: currentTerm changed from %v to %v, in AppendEntries for the coming request", rf.me, rf.role, rf.currentTerm, args.Term)
+	DPrintf("%v 's [current role: %v to Follower]: currentTerm changed from %v to %v, in AppendEntries for the coming request %v", rf.me, rf.role, rf.currentTerm, args.Term, args.LeaderId)
 
 	rf.currentTerm = args.Term
 	rf.role = Follower
@@ -390,7 +390,7 @@ func (rf *Raft) applyLogs(args *RequestAppendEntriesArgs) {
 
 func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 
-	DPrintf("%v rf response to %v at term %v, time :%v \n", rf.me, args.LeaderId, args.Term, time.Now().UnixMilli())
+	DPrintf("%v rf [remainFollower] response to %v at term %v, time :%v \n", rf.me, args.LeaderId, args.Term, time.Now().UnixMilli())
 	rf.reElectionForFollower = false
 	rf.voteFor = args.LeaderId
 	rf.latestSuccessfullyAppendTimeStamp = time.Now().UnixMilli()
@@ -460,14 +460,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.currentTerm < args.Term {
 
-		//		tsNow := time.Now().UnixMilli()
-
-		// Only successful AppendEntries can change latestSuccessfullyAppendEntriesTimestamp value.
-		// if tsNow-rf.latestSuccessfullyAppendTimeStamp <= rf.minimumElectionTimeDelta {
-		// 	reply.VoteGranted = false
-		// 	reply.Term = rf.currentTerm
-		// }
-
 		DPrintf("%v 's [current role: %v to Follower]: currentTerm changed from %v to %v, in RequestVote for the coming request rf %v at time: %v", rf.me, rf.role, rf.currentTerm, args.Term, args.CandidateId, time.Now().UnixMilli())
 		rf.currentTerm = args.Term
 
@@ -491,7 +483,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				rf.voteFor = args.CandidateId
 			}
 			rf.reElectionForFollower = false
-
+			rf.role = Follower
 			reply.VoteGranted = true
 			return
 		}
@@ -790,6 +782,11 @@ func (rf *Raft) leaderAppendLogLocally(command interface{}) {
 func (rf *Raft) LeaderAppendEntries(command interface{}) {
 	rf.mu.Lock()
 
+	if rf.role != Leader {
+		defer rf.mu.Unlock()
+		return
+	}
+
 	currentTerm := rf.currentTerm
 
 	for i := 0; i < len(rf.AppendEntriesReplyWithPeerIDChannel); i++ {
@@ -907,7 +904,7 @@ func (rf *Raft) ticker() {
 		r1 := rand.New(rand.NewSource(time.Now().UnixMilli()))
 		rf.mu.Lock()
 		role := rf.role
-		DPrintf("%v rf current role : %v", rf.me, role)
+		DPrintf("%v rf current role : %v at term %v, time : %v", rf.me, role, rf.currentTerm, time.Now().UnixMilli())
 		switch role {
 		case Leader:
 			rf.mu.Unlock()

@@ -1,0 +1,412 @@
+Test (2B): basic agreement ...
+2023/10/13 23:42:23 1 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211743735
+2023/10/13 23:42:23 2 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211743736
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211743735
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:23 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211744156
+2023/10/13 23:42:24 1 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211744162
+2023/10/13 23:42:24 2 rf current role : 0 at term 0, logs' length: 0, logs: [], time : 1697211744166
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 2 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 0 rf's role: 0 , currentTerm: 0, voteFor: 0, logs's length 0
+2023/10/13 23:42:24 1 rf changed to Candidate now ,term 0, at time 1697211744482
+2023/10/13 23:42:24 1 rf current role : 1 at term 0, logs' length: 0, logs: [], time : 1697211744482
+2023/10/13 23:42:24 [1] rf voted himself at 1, time: 1697211744482
+2023/10/13 23:42:24 1 rf send to 0, rq:{Term: 1} 
+2023/10/13 23:42:24 1 rf send to 2, rq:{Term: 1} 
+2023/10/13 23:42:24 2 's [current role: 0 to Follower]: currentTerm changed from 0 to 1, in RequestVote for the coming request rf 1 at time: 1697211744483
+2023/10/13 23:42:24 0 's [current role: 0 to Follower]: currentTerm changed from 0 to 1, in RequestVote for the coming request rf 1 at time: 1697211744483
+2023/10/13 23:42:24 [1]rf got vote from 2 at term 1 
+2023/10/13 23:42:24 [1]rf got vote from 0 at term 1 
+2023/10/13 23:42:24 1 rf return votedSuccessChannel
+2023/10/13 23:42:24 1 rf Leader now at term 1
+2023/10/13 23:42:24 log added into the 1 at term 1
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744484 
+2023/10/13 23:42:24 rf 2 Begin AppendLog at term :1 at time 1697211744484, logs: []
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744484 
+2023/10/13 23:42:24 rf 2 End AppendLog at term :1 at time 1697211744484, logs: [{1 0 no-op}]
+2023/10/13 23:42:24 rf 0 Begin AppendLog at term :1 at time 1697211744484, logs: []
+2023/10/13 23:42:24 rf 0 End AppendLog at term :1 at time 1697211744484, logs: [{1 0 no-op}]
+2023/10/13 23:42:24 1 rf current role : 2 at term 1, logs' length: 1, logs: [{1 0 no-op}], time : 1697211744484
+2023/10/13 23:42:24 1 rf's role: 2 , currentTerm: 1, voteFor: 1, logs's length 1
+2023/10/13 23:42:24 Method Start() Append cmd 100 to Leader
+2023/10/13 23:42:24 log added into the 1 at term 1
+2023/10/13 23:42:24 2 rf, rf.lastAppliedIndex : 0, rf.commitIndex :1, rf's logs: [{1 0 no-op}], at rf.term :1
+2023/10/13 23:42:24 0 rf, rf.lastAppliedIndex : 0, rf.commitIndex :1, rf's logs: [{1 0 no-op}], at rf.term :1
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744491 
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744491 
+2023/10/13 23:42:24 rf 2 Begin AppendLog at term :1 at time 1697211744491, logs: [{1 0 no-op}]
+2023/10/13 23:42:24 rf 2 End AppendLog at term :1 at time 1697211744491, logs: [{1 0 no-op} {1 1 100}]
+2023/10/13 23:42:24 rf 0 Begin AppendLog at term :1 at time 1697211744491, logs: [{1 0 no-op}]
+2023/10/13 23:42:24 rf 0 End AppendLog at term :1 at time 1697211744492, logs: [{1 0 no-op} {1 1 100}]
+2023/10/13 23:42:24 cmd: 100 
+2023/10/13 23:42:24 nd : 1, cmd1: 100 
+2023/10/13 23:42:24 1 rf current role : 2 at term 1, logs' length: 2, logs: [{1 0 no-op} {1 1 100}], time : 1697211744559
+2023/10/13 23:42:24 2 rf, rf.lastAppliedIndex : 1, rf.commitIndex :2, rf's logs: [{1 0 no-op} {1 1 100}], at rf.term :1
+2023/10/13 23:42:24 2 rf apply Log(cmd: 100) at term 1
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744559 
+2023/10/13 23:42:24 0 rf, rf.lastAppliedIndex : 1, rf.commitIndex :2, rf's logs: [{1 0 no-op} {1 1 100}], at rf.term :1
+2023/10/13 23:42:24 0 rf apply Log(cmd: 100) at term 1
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744559 
+2023/10/13 23:42:24 cmd: 100 
+2023/10/13 23:42:24 2 rf current role : 0 at term 1, logs' length: 2, logs: [{1 0 no-op} {1 1 100}], time : 1697211744579
+2023/10/13 23:42:24 nd : 3, cmd1: 100 
+2023/10/13 23:42:24 Accept cnt: 3 agreement 
+2023/10/13 23:42:24 1 rf's role: 2 , currentTerm: 1, voteFor: 1, logs's length 2
+2023/10/13 23:42:24 Method Start() Append cmd 200 to Leader
+2023/10/13 23:42:24 log added into the 1 at term 1
+2023/10/13 23:42:24 1 rf current role : 2 at term 1, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211744622
+2023/10/13 23:42:24 1 rf, rf.lastAppliedIndex : 2, rf.commitIndex :3, rf's logs: [{1 0 no-op} {1 1 100} {1 2 200}], at rf.term :1
+2023/10/13 23:42:24 1 rf apply Log(cmd: 200) at term 1
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744622 
+2023/10/13 23:42:24 rf 2 Begin AppendLog at term :1 at time 1697211744622, logs: [{1 0 no-op} {1 1 100}]
+2023/10/13 23:42:24 rf 2 End AppendLog at term :1 at time 1697211744622, logs: [{1 0 no-op} {1 1 100} {1 2 200}]
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744622 
+2023/10/13 23:42:24 rf 0 Begin AppendLog at term :1 at time 1697211744622, logs: [{1 0 no-op} {1 1 100}]
+2023/10/13 23:42:24 rf 0 End AppendLog at term :1 at time 1697211744622, logs: [{1 0 no-op} {1 1 100} {1 2 200}]
+2023/10/13 23:42:24 2 rf, rf.lastAppliedIndex : 2, rf.commitIndex :3, rf's logs: [{1 0 no-op} {1 1 100} {1 2 200}], at rf.term :1
+2023/10/13 23:42:24 0 rf, rf.lastAppliedIndex : 2, rf.commitIndex :3, rf's logs: [{1 0 no-op} {1 1 100} {1 2 200}], at rf.term :1
+2023/10/13 23:42:24 0 rf apply Log(cmd: 200) at term 1
+2023/10/13 23:42:24 2 rf apply Log(cmd: 200) at term 1
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744623 
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744623 
+2023/10/13 23:42:24 0 rf current role : 0 at term 1, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211744641
+2023/10/13 23:42:24 cmd: 200 
+2023/10/13 23:42:24 nd : 3, cmd1: 200 
+2023/10/13 23:42:24 Accept cnt: 3 agreement 
+2023/10/13 23:42:24 2 rf [remainFollower] response to 1 at term 1, time :1697211744681 
+2023/10/13 23:42:24 0 rf [remainFollower] response to 1 at term 1, time :1697211744681 
+2023/10/13 23:42:24 2 rf current role : 0 at term 1, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211744940
+2023/10/13 23:42:25 0 rf current role : 0 at term 1, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211745113
+2023/10/13 23:42:25 2 rf changed to Candidate now ,term 1, at time 1697211745324
+2023/10/13 23:42:25 2 rf current role : 1 at term 1, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211745324
+2023/10/13 23:42:25 [2] rf voted himself at 2, time: 1697211745324
+2023/10/13 23:42:25 2 rf send to 0, rq:{Term: 2} 
+2023/10/13 23:42:25 2 rf send to 1, rq:{Term: 2} 
+2023/10/13 23:42:25 0 's [current role: 0 to Follower]: currentTerm changed from 1 to 2, in RequestVote for the coming request rf 2 at time: 1697211745325
+2023/10/13 23:42:25 [2]rf got vote from 0 at term 2 
+2023/10/13 23:42:25 2 rf return votedSuccessChannel
+2023/10/13 23:42:25 2 rf Leader now at term 2
+2023/10/13 23:42:25 log added into the 2 at term 2
+2023/10/13 23:42:25 0 rf [remainFollower] response to 2 at term 2, time :1697211745326 
+2023/10/13 23:42:25 0 rf current role : 0 at term 2, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211745536
+2023/10/13 23:42:25 0 rf changed to Candidate now ,term 2, at time 1697211745922
+2023/10/13 23:42:25 0 rf current role : 1 at term 2, logs' length: 3, logs: [{1 0 no-op} {1 1 100} {1 2 200}], time : 1697211745922
+2023/10/13 23:42:25 [0] rf voted himself at 3, time: 1697211745922
+2023/10/13 23:42:25 0 rf send to 1, rq:{Term: 3} 
+2023/10/13 23:42:25 0 rf send to 2, rq:{Term: 3} 
+2023/10/13 23:42:25 2 's [current role: 2 to Follower]: currentTerm changed from 2 to 3, in RequestVote for the coming request rf 0 at time: 1697211745923
+2023/10/13 23:42:25 [0]rf got vote from 2 at term 3 
+2023/10/13 23:42:25 0 rf return votedSuccessChannel
+2023/10/13 23:42:25 0 rf Leader now at term 3
+2023/10/13 23:42:25 log added into the 0 at term 3
+2023/10/13 23:42:25 2 rf, rf.lastAppliedIndex : 3, rf.commitIndex :4, rf's logs: [{1 0 no-op} {1 1 100} {1 2 200} {2 3 no-op}], at rf.term :3
+2023/10/13 23:42:25 2 rf [remainFollower] response to 0 at term 3, time :1697211745924 
+panic: test timed out after 30s
+
+goroutine 105 [running]:
+testing.(*M).startAlarm.func1()
+	/usr/local/go/src/testing/testing.go:2029 +0x8e
+created by time.goFunc
+	/usr/local/go/src/time/sleep.go:176 +0x32
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0xc000120b60, {0x61c19b?, 0x4f7e05?}, 0x62a108)
+	/usr/local/go/src/testing/testing.go:1487 +0x37a
+testing.runTests.func1(0xc000120b60?)
+	/usr/local/go/src/testing/testing.go:1839 +0x6e
+testing.tRunner(0xc000120b60, 0xc00005dcd8)
+	/usr/local/go/src/testing/testing.go:1439 +0x102
+testing.runTests(0xc000114140?, {0x78ef20, 0x18, 0x18}, {0x7ff1fb2f6108?, 0x40?, 0x793020?})
+	/usr/local/go/src/testing/testing.go:1837 +0x457
+testing.(*M).Run(0xc000114140)
+	/usr/local/go/src/testing/testing.go:1719 +0x5d9
+main.main()
+	_testmain.go:93 +0x1aa
+
+goroutine 6 [semacquire]:
+sync.runtime_SemacquireMutex(0xc00002a180?, 0x0?, 0x2d?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).GetState(0xc00012eb40)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:197 +0x6d
+6.824/raft.(*Raft).Start(0x61f566?, {0x5da720, 0xc00009ab98})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:583 +0x2c
+6.824/raft.(*config).one(0xc00012e7e0, {0x5da720?, 0xc00009ab98}, 0x3, 0x0)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:522 +0x2f2
+6.824/raft.TestBasicAgree2B(0xc000120d00)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/test_test.go:176 +0x105
+testing.tRunner(0xc000120d00, 0x62a108)
+	/usr/local/go/src/testing/testing.go:1439 +0x102
+created by testing.(*T).Run
+	/usr/local/go/src/testing/testing.go:1486 +0x35f
+
+goroutine 7 [select]:
+6.824/labrpc.MakeNetwork.func1()
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:157 +0xb8
+created by 6.824/labrpc.MakeNetwork
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:155 +0x176
+
+goroutine 8 [chan receive]:
+6.824/raft.(*Raft).ticker(0xc00012ea20)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1033 +0x992
+created by 6.824/raft.Make
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1116 +0x325
+
+goroutine 9 [chan receive]:
+6.824/raft.(*config).applier(0xc00012e7e0, 0x0, 0x0?)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:162 +0x8d
+created by 6.824/raft.(*config).start1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:283 +0x55d
+
+goroutine 10 [semacquire]:
+sync.runtime_SemacquireMutex(0xc0000c4be0?, 0xc0?, 0xc000028720?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).ticker(0xc00012eb40)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:998 +0x489
+created by 6.824/raft.Make
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1116 +0x325
+
+goroutine 11 [chan receive]:
+6.824/raft.(*config).applier(0xc00012e7e0, 0x1, 0x0?)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:162 +0x8d
+created by 6.824/raft.(*config).start1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:283 +0x55d
+
+goroutine 12 [chan receive]:
+6.824/raft.(*Raft).ticker(0xc00012ec60)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1033 +0x992
+created by 6.824/raft.Make
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1116 +0x325
+
+goroutine 13 [chan receive]:
+6.824/raft.(*config).applier(0xc00012e7e0, 0x2, 0x0?)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:162 +0x8d
+created by 6.824/raft.(*config).start1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/config.go:283 +0x55d
+
+goroutine 45 [semacquire]:
+sync.runtime_SemacquireMutex(0x0?, 0x0?, 0x0?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).AppendEntries(0xc00012eb40, 0xc000219c00, 0xc00020b0d0)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:412 +0x57
+reflect.Value.call({0xc00002a240?, 0xc00000e670?, 0xc0000ddb10?}, {0x6193ba, 0x4}, {0xc0000ddc68, 0x3, 0xc0000ddb40?})
+	/usr/local/go/src/reflect/value.go:556 +0x845
+reflect.Value.Call({0xc00002a240?, 0xc00000e670?, 0xc000206ad0?}, {0xc0000ddc68, 0x3, 0x3})
+	/usr/local/go/src/reflect/value.go:339 +0xbf
+6.824/labrpc.(*Service).dispatch(0xc000105d80, {0x61cb02, 0xd}, {{0x5daea0, 0xc0000635c0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0000d4500, ...}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:500 +0x38e
+6.824/labrpc.(*Server).dispatch(0xc00000c7f8, {{0x5daea0, 0xc0000635c0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0000d4500, 0xdd, 0xf7}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:424 +0x1fe
+6.824/labrpc.(*Network).processReq.func1()
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:244 +0x58
+created by 6.824/labrpc.(*Network).processReq
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:243 +0x1d7
+
+goroutine 58 [chan send]:
+6.824/raft.(*Raft).processSuccessRequest(0xc00012eb40, 0xc0001b0ea0?, 0x5?, 0x3)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:782 +0x27c
+6.824/raft.(*Raft).LeaderAppendEntries(0xc00012eb40, {0x0?, 0x0})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:948 +0x59f
+created by 6.824/raft.(*Raft).ticker
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:995 +0x433
+
+goroutine 63 [chan receive]:
+6.824/labrpc.(*ClientEnd).Call(0xc00006e300, {0x61c16b?, 0x0?}, {0x5d23c0, 0xc0000b9240}, {0x5d2400, 0xc0000a1300})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:115 +0x25e
+6.824/raft.(*Raft).sendRequestVote(0xc00012ec60, 0x1, 0xc0000b9240, 0xc0000a1300)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:546 +0x85
+created by 6.824/raft.(*Raft).launchElection
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:678 +0x34c
+
+goroutine 89 [semacquire]:
+sync.runtime_SemacquireMutex(0x0?, 0x0?, 0x0?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).AppendEntries(0xc00012eb40, 0xc000282b00, 0xc000191650)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:412 +0x57
+reflect.Value.call({0xc00002a240?, 0xc00000e670?, 0xc0001dbb10?}, {0x6193ba, 0x4}, {0xc0001dbc68, 0x3, 0xc0001dbb40?})
+	/usr/local/go/src/reflect/value.go:556 +0x845
+reflect.Value.Call({0xc00002a240?, 0xc00000e670?, 0xc0001aae90?}, {0xc0001dbc68, 0x3, 0x3})
+	/usr/local/go/src/reflect/value.go:339 +0xbf
+6.824/labrpc.(*Service).dispatch(0xc000105d80, {0x61cb02, 0xd}, {{0x5daea0, 0xc0000638f0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0001f6400, ...}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:500 +0x38e
+6.824/labrpc.(*Server).dispatch(0xc00000c7f8, {{0x5daea0, 0xc0000638f0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0001f6400, 0xdf, 0xf7}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:424 +0x1fe
+6.824/labrpc.(*Network).processReq.func1()
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:244 +0x58
+created by 6.824/labrpc.(*Network).processReq
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:243 +0x1d7
+
+goroutine 85 [chan receive]:
+6.824/raft.(*Raft).LeaderAppendEntries(0xc00012ec60, {0x5daea0?, 0x663600})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:899 +0x37e
+created by 6.824/raft.(*Raft).ticker
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1031 +0x972
+
+goroutine 95 [chan receive]:
+6.824/raft.(*Raft).LeaderAppendEntries(0xc00012ea20, {0x5daea0?, 0x663600})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:899 +0x37e
+created by 6.824/raft.(*Raft).ticker
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:1031 +0x972
+
+goroutine 100 [select]:
+6.824/labrpc.(*Network).processReq(0xc0000102d0, {{0x5daea0, 0xc0000635c0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d0540, 0x62, 0xba}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:255 +0x3f7
+created by 6.824/labrpc.MakeNetwork.func1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:161 +0x39
+
+goroutine 87 [chan receive]:
+6.824/labrpc.(*ClientEnd).Call(0xc00006e300, {0x61cafd?, 0x3e?}, {0x5d2380, 0xc000282780}, {0x5d2280, 0xc00019fa20})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:115 +0x25e
+6.824/raft.(*Raft).sendAppendEntries(0xc00012ec60, 0x1, 0xc0001a0960?, 0xc00019fa20)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:317 +0x65
+created by 6.824/raft.(*Raft).LeaderAppendEntries
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:889 +0x88c
+
+goroutine 14 [semacquire]:
+sync.runtime_SemacquireMutex(0xc000121e88?, 0x8e?, 0x440cb1?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).LeaderAppendEntries(0xc00012eb40, {0x0?, 0x0})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:901 +0x3db
+created by 6.824/raft.(*Raft).ticker
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:995 +0x433
+
+goroutine 88 [select]:
+6.824/labrpc.(*Network).processReq(0xc0000102d0, {{0x5daea0, 0xc0000638f0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0001f6400, 0xdf, 0xf7}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:255 +0x3f7
+created by 6.824/labrpc.MakeNetwork.func1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:161 +0x39
+
+goroutine 64 [select]:
+6.824/labrpc.(*Network).processReq(0xc0000102d0, {{0x5daea0, 0xc0000638f0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d03c0, 0x64, 0xbc}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:255 +0x3f7
+created by 6.824/labrpc.MakeNetwork.func1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:161 +0x39
+
+goroutine 97 [semacquire]:
+sync.runtime_SemacquireMutex(0xc0000e1378?, 0x4e?, 0x6662e0?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).RequestVote(0xc00012eb40, 0xc0000b94a0, 0xc00009b130)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:458 +0x74
+reflect.Value.call({0xc00002a3c0?, 0xc00000e698?, 0xc0000e1b10?}, {0x6193ba, 0x4}, {0xc0000e1c68, 0x3, 0xc0000e1b40?})
+	/usr/local/go/src/reflect/value.go:556 +0x845
+reflect.Value.Call({0xc00002a3c0?, 0xc00000e698?, 0xc0000be9b8?}, {0xc0000e1c68, 0x3, 0x3})
+	/usr/local/go/src/reflect/value.go:339 +0xbf
+6.824/labrpc.(*Service).dispatch(0xc000105d80, {0x61c170, 0xb}, {{0x5daea0, 0xc0000638f0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d03c0, ...}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:500 +0x38e
+6.824/labrpc.(*Server).dispatch(0xc00000c7f8, {{0x5daea0, 0xc0000638f0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d03c0, 0x64, 0xbc}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:424 +0x1fe
+6.824/labrpc.(*Network).processReq.func1()
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:244 +0x58
+created by 6.824/labrpc.(*Network).processReq
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:243 +0x1d7
+
+goroutine 101 [semacquire]:
+sync.runtime_SemacquireMutex(0xc000163378?, 0x4e?, 0x6662e0?)
+	/usr/local/go/src/runtime/sema.go:71 +0x25
+sync.(*Mutex).lockSlow(0xc00012eb40)
+	/usr/local/go/src/sync/mutex.go:162 +0x165
+sync.(*Mutex).Lock(...)
+	/usr/local/go/src/sync/mutex.go:81
+6.824/raft.(*Raft).RequestVote(0xc00012eb40, 0xc0000b9b40, 0xc00009b5f0)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:458 +0x74
+reflect.Value.call({0xc00002a3c0?, 0xc00000e698?, 0xc000163b10?}, {0x6193ba, 0x4}, {0xc000163c68, 0x3, 0xc000163b40?})
+	/usr/local/go/src/reflect/value.go:556 +0x845
+reflect.Value.Call({0xc00002a3c0?, 0xc00000e698?, 0xc0000bed40?}, {0xc000163c68, 0x3, 0x3})
+	/usr/local/go/src/reflect/value.go:339 +0xbf
+6.824/labrpc.(*Service).dispatch(0xc000105d80, {0x61c170, 0xb}, {{0x5daea0, 0xc0000635c0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d0540, ...}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:500 +0x38e
+6.824/labrpc.(*Server).dispatch(0xc00000c7f8, {{0x5daea0, 0xc0000635c0}, {0x61c16b, 0x10}, {0x6662e0, 0x5d23c0}, {0xc0000d0540, 0x62, 0xba}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:424 +0x1fe
+6.824/labrpc.(*Network).processReq.func1()
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:244 +0x58
+created by 6.824/labrpc.(*Network).processReq
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:243 +0x1d7
+
+goroutine 102 [select]:
+6.824/labrpc.(*Network).processReq(0xc0000102d0, {{0x5daea0, 0xc0000635c0}, {0x61cafd, 0x12}, {0x6662e0, 0x5d2380}, {0xc0000d4500, 0xdd, 0xf7}, ...})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:255 +0x3f7
+created by 6.824/labrpc.MakeNetwork.func1
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:161 +0x39
+
+goroutine 91 [chan receive]:
+6.824/labrpc.(*ClientEnd).Call(0xc00006e140, {0x61c16b?, 0x0?}, {0x5d23c0, 0xc0001b7b80}, {0x5d2400, 0xc00019fcf0})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:115 +0x25e
+6.824/raft.(*Raft).sendRequestVote(0xc00012ea20, 0x1, 0xc0001b7b80, 0xc00019fcf0)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:546 +0x85
+created by 6.824/raft.(*Raft).launchElection
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:678 +0x34c
+
+goroutine 96 [chan receive]:
+6.824/labrpc.(*ClientEnd).Call(0xc00006e140, {0x61cafd?, 0xc0000635e0?}, {0x5d2380, 0xc000283040}, {0x5d2280, 0xc00028c1c0})
+	/home/wangzhen/program/learnGo/mit824/6.824/src/labrpc/labrpc.go:115 +0x25e
+6.824/raft.(*Raft).sendAppendEntries(0xc00012ea20, 0x1, 0x5daea0?, 0xc00028c1c0)
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:317 +0x65
+created by 6.824/raft.(*Raft).LeaderAppendEntries
+	/home/wangzhen/program/learnGo/mit824/6.824/src/raft/raft.go:889 +0x88c
+exit status 2
+FAIL	6.824/raft	30.010s

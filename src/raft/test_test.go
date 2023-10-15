@@ -95,7 +95,19 @@ func TestReElection2A(t *testing.T) {
 	cfg.end()
 }
 
+func printMapKeys(m *map[int]interface{}) {
+	keys := make([]int, len(*m))
+
+	i := 0
+	for k := range *m {
+		keys[i] = k
+		i++
+	}
+	DPrintf("connected servers : %v \n", keys)
+
+}
 func TestManyElections2A(t *testing.T) {
+
 	servers := 7
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -103,26 +115,45 @@ func TestManyElections2A(t *testing.T) {
 	cfg.begin("Test (2A): multiple elections")
 
 	cfg.checkOneLeader()
+	connectedSet := make(map[int]interface{})
+	for i := 0; i < servers; i++ {
+		connectedSet[i] = nil
+	}
 
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
+		DPrintf("Begin %v check \n", ii)
 		// disconnect three nodes
 		i1 := rand.Int() % servers
 		i2 := rand.Int() % servers
 		i3 := rand.Int() % servers
+		DPrintf("%v rf disconnected \n", i1)
 		cfg.disconnect(i1)
+		delete(connectedSet, i1)
+		DPrintf("%v rf disconnected \n", i2)
 		cfg.disconnect(i2)
+		delete(connectedSet, i2)
+		DPrintf("%v rf disconnected \n", i3)
 		cfg.disconnect(i3)
-
+		delete(connectedSet, i3)
+		printMapKeys(&connectedSet)
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
 		cfg.checkOneLeader()
 
+		DPrintf("%v rf connected \n", i1)
 		cfg.connect(i1)
+		connectedSet[i1] = nil
+		DPrintf("%v rf connected \n", i2)
 		cfg.connect(i2)
+		connectedSet[i2] = nil
+		DPrintf("%v rf connected \n", i3)
 		cfg.connect(i3)
+		connectedSet[i3] = nil
 	}
 
+	DPrintf("Last check")
+	printMapKeys(&connectedSet)
 	cfg.checkOneLeader()
 
 	cfg.end()
@@ -197,6 +228,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
+	DPrintf("%v disconnected", (leader+1)%servers)
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
@@ -208,13 +240,16 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(105, servers-1, false)
 
 	// re-connect
+	DPrintf("%v connected", (leader+1)%servers)
 	cfg.connect((leader + 1) % servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
 	// on new commands.
 	cfg.one(106, servers, true)
+	DPrintf("Wait for agreement :%v", time.Now().UnixMilli())
 	time.Sleep(RaftElectionTimeout)
+	DPrintf("Wait for agreement end:%v", time.Now().UnixMilli())
 	cfg.one(107, servers, true)
 
 	cfg.end()
@@ -222,6 +257,12 @@ func TestFailAgree2B(t *testing.T) {
 
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
+
+	connectedSet := make(map[int]interface{})
+	for i := 0; i < servers; i++ {
+		connectedSet[i] = nil
+	}
+
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
@@ -232,8 +273,13 @@ func TestFailNoAgree2B(t *testing.T) {
 	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
+	delete(connectedSet, leader+1)
 	cfg.disconnect((leader + 2) % servers)
+	delete(connectedSet, leader+2)
 	cfg.disconnect((leader + 3) % servers)
+	delete(connectedSet, leader+3)
+
+	printMapKeys(&connectedSet)
 
 	index, _, ok := cfg.rafts[leader].Start(20)
 	if ok != true {

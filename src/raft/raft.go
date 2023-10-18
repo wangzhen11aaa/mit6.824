@@ -881,19 +881,21 @@ func (rf *Raft) updateLeaderCommitIndex() {
 			}
 		}
 	}
+	DPrintf("Goroutine: %v, %v rf Commit index in updateLeaderCommitIndex cnt: %v", GetGOId(), rf.me, cnt)
 
 	// Select the N in the cnt map.
-	N := -1
+	var n int
+	n = -1
 	for k, v := range cnt {
-		if v >= len(rf.logs)/2 {
-			if k > N {
-				N = k
-			}
+		DPrintf("Goroutine :%v, k: %v, v:%v \n", GetGOId(), k, v)
+		if v >= (len(rf.peers) / 2) {
+			n = k
 		}
 	}
-	DPrintf("Goroutine: %v, %v rf Commit index in updateLeaderCommitIndex rf.commitIndex changed from %v to %v, rf.matchIndex: %v", GetGOId(), rf.me, rf.commitIndex, N, rf.matchIndex)
 
-	rf.commitIndex = N
+	DPrintf("Goroutine: %v, %v rf Commit index in updateLeaderCommitIndex rf.commitIndex changed from %v to %v, rf.matchIndex: %v", GetGOId(), rf.me, rf.commitIndex, n, rf.matchIndex)
+
+	rf.commitIndex = n
 }
 
 // Process the success vote request condition.

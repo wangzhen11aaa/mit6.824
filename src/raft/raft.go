@@ -346,8 +346,8 @@ func (rf *Raft) becomeFollower(args *RequestAppendEntriesArgs, reply *AppendEntr
 // If the consistLogCheck failed, return false.(This makes the leader reduce the nextIndex for this server)
 func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 	//Check whether the logs have been appended are the same with the leader. Reduction Property.
-	DPrintf("Goroutine: %v, rf %v Begin consistLogCheck at term :%v at time %v, logs: %v, args: %v", GetGOId(), rf.me, rf.currentTerm,
-		time.Now().UnixMilli(), rf.logs, args)
+	DPrintf("Goroutine: %v, rf %v Begin consistLogCheck at term :%v at time %v, logs: %v, args: %v, rf.commitIndex %v, rf.lastApplied : %v", GetGOId(), rf.me, rf.currentTerm,
+		time.Now().UnixMilli(), rf.logs, args, rf.commitIndex, rf.lastApplied)
 
 	if len(rf.logs)-1 >= args.PrevLogIndex {
 
@@ -363,7 +363,7 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 			if rf.commitIndex < args.LeaderCommit {
 				DPrintf("Goroutine: %v, rf %v Begin AppendLog at term :%v, rf.commitIndex: %v, at time %v, logs: %v, args: %v", GetGOId(), rf.me, rf.currentTerm, rf.commitIndex,
 					time.Now().UnixMilli(), rf.logs, args)
-				rf.logs = append(rf.logs, args.Entries[len(args.Entries)-(args.LeaderCommit-rf.commitIndex):]...)
+				rf.logs = append(rf.logs, args.Entries[(rf.commitIndex-args.PrevLogIndex-1):]...)
 				DPrintf("Goroutine: %v,rf %v End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
 					time.Now().UnixMilli(), rf.logs)
 			}
@@ -372,7 +372,8 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 			// rf.tryQuickApplyLaggedLogs(args)
 
 			// Index of highest log entry known to be committed.
-			rf.commitIndex = args.LeaderCommit
+			DPrintf("Goroutine: %v,rf %v End AppendLog at term update rf.commitIndex from %v to %v at time: %v", GetGOId(), rf.me, rf.commitIndex, len(rf.logs), time.Now().UnixMilli())
+			rf.commitIndex = len(rf.logs)
 
 			return true
 		} else {
@@ -384,46 +385,19 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 	return false
 }
 
-// Try apply logs[rf.commitIndex, args.prevLogIndex+1), and update the local lastApplied.
-// func (rf *Raft) tryQuickApplyLaggedLogs(args *RequestAppendEntriesArgs) {
-
-// 	if rf.commitIndex < args.PrevLogIndex+1 {
-// 		DPrintf("Goroutine %v quickApplyLaggedLogs ,rf.commitIndex: %v, args.prevLogIndex:%v", GetGOId(), rf.commitIndex, args.PrevLogIndex)
-// 	}
-
-// 	var i int
-// 	for i = rf.commitIndex; i < args.PrevLogIndex+1; i++ {
-// 		if rf.logs[i].Cmd == "no-op" {
-// 			rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.logs[i].Cmd, CommandIndex: i}
-// 			DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v) at term %v , at time :%v", GetGOId(), rf.me, rf.logs[i].Cmd, rf.currentTerm, time.Now().UnixMilli())
-
-// 		} else {
-// 			rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: i}
-// 			DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v) at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, rf.currentTerm, time.Now().UnixMilli())
-// 		}
-// 	}
-
-// 	rf.lastApplied = i
-// }
-
 // applyLogs actually do the copy things, copy things into local state.
 func (rf *Raft) applyLogs() {
 
 	//DPrintf("Goroutine: %v, %v rf, rf.lastAppliedIndex : %v, rf.commitIndex :%v, rf's logs: %v, at rf.term :%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, rf.currentTerm)
+	for i := rf.lastApplied; i < rf.commitIndex; i++ {
 
-	for i, j := rf.lastApplied, rf.lastApplied; i < rf.commitIndex; i++ {
-		if rf.logs[i].Cmd == "no-op" {
-			rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.logs[i].Cmd, CommandIndex: j}
-			DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v) at term %v , at time :%v", GetGOId(), rf.me, rf.logs[i].Cmd, rf.currentTerm, time.Now().UnixMilli())
-
-		} else {
-			rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: j}
-			DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v) at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, rf.currentTerm, time.Now().UnixMilli())
-			j++
-		}
+		rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: i}
+		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, i, rf.currentTerm, time.Now().UnixMilli())
 	}
 
+	DPrintf("Goroutine:%v, [Follower]%v rf apply Log End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.currentTerm, time.Now().UnixMilli())
 	rf.lastApplied = rf.commitIndex
+
 }
 
 func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
@@ -446,14 +420,29 @@ func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntr
 
 }
 
+func (rf *Raft) applySyncWithLeader(args *RequestAppendEntriesArgs, nextIndexToApply int) {
+
+	var i int
+	for i = rf.lastApplied; i < rf.commitIndex && i < nextIndexToApply; i++ {
+
+		rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: i}
+		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, i, rf.currentTerm, time.Now().UnixMilli())
+	}
+	DPrintf("Goroutine:%v, [Follower]%v rf applySyncWithLeader End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, i, rf.currentTerm, time.Now().UnixMilli())
+	rf.lastApplied = i
+}
+
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DPrintf("Goroutine: %v,Follower %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
+
 	// Figure 2, Rules for Servers
 	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	if rf.lastApplied < rf.commitIndex {
-		rf.applyLogs()
+	if rf.commitIndex <= args.PrevLogIndex {
+		rf.applySyncWithLeader(args, rf.commitIndex)
+	} else {
+		rf.applySyncWithLeader(args, args.PrevLogIndex+1)
 	}
 
 	// AppendEntires rule 1.Reply false if term < current Term
@@ -753,6 +742,7 @@ func (rf *Raft) launchElection() {
 			lostConnectionCnt++
 
 			if lostConnectionCnt >= len(rf.peers)/2+1 {
+				defer rf.mu.Unlock()
 				rf.processNetworkFailure(VoteRequest, false)
 				return
 			}
@@ -806,7 +796,7 @@ func (rf *Raft) processFailedRequest(typ int, updatedTerm int) {
 }
 
 // Update all the followers' nextIndex
-func (rf *Raft) updateAllFollowersNextIndex(localNextIndexToCommit int) {
+func (rf *Raft) updateAllFollowersNextIndex(rejectServer map[int]interface{}, approveServer map[int]interface{}, nextIndexToCommit int) {
 	// Update the corresponded next index of the server, if this server has successfully replicated the logs.
 	/* For example:
 	Two cases:
@@ -815,14 +805,14 @@ func (rf *Raft) updateAllFollowersNextIndex(localNextIndexToCommit int) {
 		[], rf.nextIndex = 0
 
 	logs (After Leader appending log):
-		[[0]], len(rf.logs) = 1, localNextIndexToCommit = 1
+		[[0]], len(rf.logs) = 1, nextIndexToCommit = 1
 
 	Leader has logs:
 	logs (Before Leader appending log):
 	  [0], rf.nextIndex = 1
 
 	logs (After Leader appending log):
-	  [[0] [1]], len(rf.logs) = 2, localNextIndexToCommit = 2
+	  [[0] [1]], len(rf.logs) = 2, nextIndexToCommit = 2
 	  [1] will send to the follower to append.
 
 	*/
@@ -831,19 +821,27 @@ func (rf *Raft) updateAllFollowersNextIndex(localNextIndexToCommit int) {
 		if i == rf.me {
 			continue
 		}
-		if _, found := rf.rejectServer[i]; found {
+		if _, found := rejectServer[i]; found {
 			DPrintf("Goroutine:%v, %v rf appendEntries returned false, does not update nextIndex", GetGOId(), i)
-			// Delete server from the rf.rejectServer.
-			delete(rf.rejectServer, i)
 			continue
 		}
-		rf.nextIndex[i] = localNextIndexToCommit
-		rf.matchIndex[i] = localNextIndexToCommit - 1
+		if _, found := approveServer[i]; found {
+			DPrintf("Goroutine:%v, %v rf appendEntries has updated nextIndex, nextIndex[%v]: %v", GetGOId(), i, i, rf.nextIndex[i])
+			continue
+		}
+		rf.nextIndex[i] = nextIndexToCommit
+		// This structure contains the index that should be committed.
+		rf.matchIndex[i] = nextIndexToCommit
 	}
 }
 
 // Process the success append entries request condition.
-func (rf *Raft) processMajoritySuccessAppendRequest(leaderCommitStartIndex int, localNextIndexToCommit int) {
+func (rf *Raft) processMajoritySuccessAppendRequest(leaderCommitStartIndex int, nextIndexToCommit int, rejectServer map[int]interface{}, approveServer map[int]interface{}) {
+
+	// Update the leader's commitIndex, this means that those logs have been committed on the majority of cluster server.
+	rf.updateAllFollowersNextIndex(rejectServer, approveServer, nextIndexToCommit)
+	//update rf.commitIndex
+	rf.updateLeaderCommitIndex()
 
 	// If the majority of servers have been replicated this log,It is safe now to apply this log.
 	/* For example:
@@ -851,41 +849,62 @@ func (rf *Raft) processMajoritySuccessAppendRequest(leaderCommitStartIndex int, 
 	  [0], rf.nextIndex = 1
 
 	logs (After Leader appending log):
-	  [[0] [1]], len(rf.logs) = 2, localNextIndexToCommit = 2
+	  [[0] [1]], len(rf.logs) = 2, nextIndexToCommit = 2
 	  [1] will send to the follower to append.
 	*/
 	// When the majority appended successfully, we update local commitIndex for the next logs to append.
 	// The leader can apply these logs safely. logs[leaderCommitStartIndex, localCommitStartIndex)
 
-	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs at term %v, at time %v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
-	for i, j := leaderCommitStartIndex, leaderCommitStartIndex; i < localNextIndexToCommit; i += 1 {
-		if rf.logs[i].Cmd == "no-op" {
-			rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.logs[i].Cmd, CommandIndex: j}
-		} else {
-			rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: j}
-			DPrintf("Goroutine: %v, %v rf apply cmd %v at index %v, time: %v", GetGOId(), rf.me, rf.logs[i].Cmd, j, time.Now().UnixMilli())
-			j++
+	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs: %v at term %v, leaderCommitStartIndex: %v, at time %v", GetGOId(), rf.me, rf.logs, rf.currentTerm, leaderCommitStartIndex, time.Now().UnixMilli())
+	for i := rf.lastApplied; i < rf.commitIndex; i += 1 {
+
+		rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: i}
+		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, i, rf.currentTerm, time.Now().UnixMilli())
+	}
+
+	DPrintf("Goroutine:%v,[Leader] %v rf apply Log End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.currentTerm, time.Now().UnixMilli())
+
+	rf.lastApplied = rf.commitIndex
+}
+
+// Update leader commit index.
+func (rf *Raft) updateLeaderCommitIndex() {
+	// Find the N, that N > commitIndex, a majority of matchIndex[i] >= N and log[N].term == currentTerm: set commitIndex = N.
+	cnt := make(map[int]int)
+	for server, k := range rf.matchIndex {
+		if server != rf.me {
+			_, found := cnt[k]
+			if found {
+				cnt[k]++
+			} else {
+				cnt[k] = 1
+			}
 		}
 	}
 
-	DPrintf("Goroutine: %v, %v rf[Leader] End apply logs at term %v, at time %v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
-	rf.lastApplied = localNextIndexToCommit
-	// At last, update the leader's commitIndex, this means that those logs have been committed on the majority of cluster server.
-	rf.commitIndex = localNextIndexToCommit
+	// Select the N in the cnt map.
+	N := -1
+	for k, v := range cnt {
+		if v >= len(rf.logs)/2 {
+			if k > N {
+				N = k
+			}
+		}
+	}
+	DPrintf("Goroutine: %v, %v rf Commit index in updateLeaderCommitIndex rf.commitIndex changed from %v to %v, rf.matchIndex: %v", GetGOId(), rf.me, rf.commitIndex, N, rf.matchIndex)
 
+	rf.commitIndex = N
 }
 
 // Process the success vote request condition.
 func (rf *Raft) processMajoritySuccessVoteRequest() {
 	defer rf.mu.Unlock()
-	rf.role = Leader
 	rf.voteSuccessChannel <- MajoritySupport
 }
 
 // Process the network failure condition
 func (rf *Raft) processNetworkFailure(typ int, result bool) {
 	// rf.mu.Lock()
-	defer rf.mu.Unlock()
 	DPrintf("Goroutine: %v, %v rf Network problem at term %v", GetGOId(), rf.me, rf.currentTerm)
 	if typ == VoteRequest {
 		rf.voteSuccessChannel <- NetWorkProblem
@@ -914,9 +933,8 @@ func (rf *Raft) prepareAppendRequest(rq *RequestAppendEntriesArgs) {
 
 func (rf *Raft) leaderAppendLogLocally(command interface{}) {
 	rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: len(rf.logs), Cmd: command})
+
 	DPrintf("Goroutine:%v, Leader make log added into the %v at term %v", GetGOId(), rf.me, rf.currentTerm)
-	// Update the commitIdex, which is the index/position of log *to be committed* next time.[0, len(rf.logs)-1] are logs which have been committed.
-	rf.commitIndex = len(rf.logs)
 }
 
 func GetGOId() int64 {
@@ -936,6 +954,7 @@ func GetGOId() int64 {
 }
 
 func (rf *Raft) updateFollowerNextIndex(server int, followerLogTerm int) {
+	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerLogTerm: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerLogTerm)
 	right := len(rf.logs)
 	left := 0
 	for left < right {
@@ -946,9 +965,18 @@ func (rf *Raft) updateFollowerNextIndex(server int, followerLogTerm int) {
 			left = mid + 1
 		}
 	}
-	DPrintf("result: %v, target index: %v, logs: %v, targetTerm: %v", right, right+1, rf.logs, followerLogTerm)
+	DPrintf("Goroutine: %v, result: %v, target index: %v, logs: %v, targetTerm: %v", GetGOId(), right, right+1, rf.logs, followerLogTerm)
 	rf.nextIndex[server] = right + 1
 }
+
+// Update nextIndex and matchIndex for this server.
+func (rf *Raft) updateNextIndexAndMatchIndex(server int, nextIndexToCommit int) {
+
+	rf.nextIndex[server] = nextIndexToCommit
+	rf.matchIndex[server] = nextIndexToCommit
+
+}
+
 func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	rf.mu.Lock()
 
@@ -958,16 +986,12 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	}
 
 	// Figure 2, Rules for Servers
-	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
+	//If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 	if rf.lastApplied < rf.commitIndex {
 		rf.applyLogs()
 	}
 
 	currentTerm := rf.currentTerm
-
-	// for i := 0; i < len(rf.AppendEntriesReplyWithPeerIDChannel); i++ {
-	// 	<-rf.AppendEntriesReplyWithPeerIDChannel
-	// }
 
 	rq := RequestAppendEntriesArgs{}
 	rf.prepareAppendRequest(&rq)
@@ -983,11 +1007,10 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	// Figure 2 AppendEntries RPC
 	// Update rq.LeaderCommit to leader's commitIndex now.
 
-	rq.LeaderCommit = rf.commitIndex
-
+	//rq.LeaderCommit = rf.commitIndex
 	// Store current nextIndex for leader to update,when the majority appended these logs.
-	localNextIndexToCommit := len(rf.logs)
-
+	nextIndexToCommit := len(rf.logs)
+	rq.LeaderCommit = nextIndexToCommit
 	resultChan := make(chan AppendEntriesReplyWithPeerID)
 	replies := make([]AppendEntriesReply, len(rf.peers))
 	// AppendEntries to other peers.
@@ -1007,18 +1030,19 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 			rq.PreviousIndex is the leader's latest index, at which the log has been committed. [rq.PreviousIndex+1, rq.LeaderCommit) are logs to committed for these follower, at the first time.
 			  [1] will send to the follower to append.
 			*/
+			DPrintf("Goroutine: %v, in LeaderAppendEntries rf.nextIndex[%v] :%v, nextIndexToCommit: %v, at term %v time: %v", GetGOId(), i, rf.nextIndex[i], nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli())
 			rq.PrevLogIndex = rf.nextIndex[i] - 1
 
 			rq.PrevLogTerm = -1
 			if rq.PrevLogIndex >= 0 {
 				rq.PrevLogTerm = rf.logs[rq.PrevLogIndex].Term
 			}
-			for idx := rf.nextIndex[i]; idx < localNextIndexToCommit; idx++ {
+			for idx := rf.nextIndex[i]; idx < nextIndexToCommit; idx++ {
 				rq.Entries = append(rq.Entries, rf.logs[idx])
 			}
 			rqCopy := rq
 			// rf.mu.UnLock() can not after sendAppendEntries, because deadlock.
-			DPrintf("Goroutine: %v, rf [Leader] %v sends AppendEntry rq %v to follower %v, at term %v \n, time :%v", GetGOId(), rf.me, rqCopy, i, rf.currentTerm, time.Now().UnixMilli())
+			DPrintf("Goroutine: %v, rf [Leader] %v, logs: %v, sends AppendEntry rq %v to follower %v, at term %v \n, time :%v", GetGOId(), rf.me, rf.logs, rqCopy, i, rf.currentTerm, time.Now().UnixMilli())
 			go rf.sendAppendEntries(i, &rqCopy, &replies[i], resultChan)
 		}
 		rq.Entries = nil
@@ -1027,27 +1051,39 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	rf.mu.Unlock()
 	LostConnectionCnt := 0
 	successCnt := 1
-	updatedTerm := -1
+	updatedTerm := 0
+	rejectServer := make(map[int]interface{})
+	approveServer := make(map[int]interface{})
+
 	for i := 0; i < len(rf.peers)-1; i++ {
 
 		resp := <-resultChan
 		rf.mu.Lock()
 
-		if resp.reply.Term > rf.currentTerm {
-			DPrintf("Goroutine: %v, %v rf received response from rf:%v, resp: %v, time :%v, Leader->Follower", GetGOId(), rf.me, resp.server, resp, time.Now().UnixMilli())
-			defer rf.mu.Unlock()
-			rf.role = Follower
-			rf.voteFor = Nobody
-			rf.currentTerm = resp.reply.Term
-			return NoLeader
-		}
+		// if resp.reply.Term > rf.currentTerm {
+		// 	DPrintf("Goroutine: %v, %v rf received response from rf:%v, resp: %v, time :%v, Leader->Follower", GetGOId(), rf.me, resp.server, resp, time.Now().UnixMilli())
+		// 	defer rf.mu.Unlock()
+		// 	rf.role = Follower
+		// 	rf.voteFor = Nobody
+		// 	rf.currentTerm = resp.reply.Term
+		// 	return NoLeader
+		// }
 
 		if resp.reply.Term == LostConnection {
 			LostConnectionCnt++
 
 			if LostConnectionCnt >= len(rf.peers)/2+1 {
+				defer rf.mu.Unlock()
 				rf.processNetworkFailure(AppendRequest, true)
-				return InvalidPosition
+
+				DPrintf("Goroutine: %v, %v rf , currentTerm: %v, updatedTerm: %v", GetGOId(), rf.me, rf.currentTerm, updatedTerm)
+				if updatedTerm > rf.currentTerm {
+					rf.role = Follower
+					rf.voteFor = Nobody
+					rf.currentTerm = updatedTerm
+				}
+
+				return leaderCommitStartIndex
 			}
 		} else {
 			if resp.reply.Success {
@@ -1060,21 +1096,35 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 				successCnt++
 
-				delete(rf.rejectServer, resp.server)
-				//rf.updateFollowerNextIndex(resp.server, localNextIndexToCommit)
+				//delete(rejectServer, resp.server)
+				approveServer[resp.server] = nil
+
+				rf.updateNextIndexAndMatchIndex(resp.server, nextIndexToCommit)
+
+				//rf.updateFollowerNextIndex(resp.server, nextIndexToCommit)
 				// The logs has committed on the majority servers.
 				if successCnt >= len(rf.peers)/2+1 {
 					defer rf.mu.Unlock()
 
-					rf.updateAllFollowersNextIndex(localNextIndexToCommit)
-					rf.processMajoritySuccessAppendRequest(leaderCommitStartIndex, localNextIndexToCommit)
+					rf.processMajoritySuccessAppendRequest(leaderCommitStartIndex, nextIndexToCommit, rejectServer, approveServer)
+
+					if updatedTerm > rf.currentTerm {
+						rf.role = Follower
+						rf.voteFor = Nobody
+						rf.currentTerm = updatedTerm
+						return leaderCommitStartIndex
+					}
 
 					return leaderCommitStartIndex
 				}
 			} else {
 				// Record the most updated Term from the peer.
-				if updatedTerm < resp.reply.Term {
-					updatedTerm = resp.reply.Term
+				if rf.currentTerm < resp.reply.Term {
+					if updatedTerm < resp.reply.Term {
+						updatedTerm = resp.reply.Term
+					}
+					rf.mu.Unlock()
+					continue
 				}
 				//Figure2,Rules for server, $5.3 If the AppendEntries fails because of log inconsistency, decrement nextIndex and retry. (Wait next heartbeat)
 				// TODO can optimize this.
@@ -1084,7 +1134,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 				// Update the rf.nextIndex to the first op command of replied term.
 				rf.updateFollowerNextIndex(resp.server, resp.reply.Term)
-				rf.rejectServer[resp.server] = nil
+				rejectServer[resp.server] = nil
 			}
 		}
 
@@ -1141,8 +1191,10 @@ func (rf *Raft) ticker() {
 			voteSuccess := <-rf.voteSuccessChannel
 			rf.mu.Lock()
 			if voteSuccess == MajoritySupport {
+				rf.role = Leader
 				DPrintf("Goroutine: %v, %v rf Leader now at term %v", GetGOId(), rf.me, rf.currentTerm)
 				rf.initializeIndexForFollowers()
+
 				rf.mu.Unlock()
 
 				// First insert a on-op log into leader.

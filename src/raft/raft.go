@@ -145,6 +145,9 @@ type Raft struct {
 
 	latestSuccessfullyAppendTimeStamp int64
 
+	// Recodes the leader cost time.
+	timers []int
+
 	// Minimum election time for raft election is 100milliseconds
 	minimumElectionTimeDelta int64
 	// current term
@@ -348,13 +351,20 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 	//Check whether the logs have been appended are the same with the leader. Reduction Property.
 	DPrintf("Goroutine: %v, rf %v Begin consistLogCheck at term :%v at time %v, logs: %v, args: %v, rf.commitIndex %v, rf.lastApplied : %v", GetGOId(), rf.me, rf.currentTerm,
 		time.Now().UnixMilli(), rf.logs, args, rf.commitIndex, rf.lastApplied)
+	// Heartbeat.
+
+	if len(args.Entries) == 0 {
+		return true
+	}
+
+	// Follower's partial state
+	// 				logs [{x},{y}]
+	// Leader's  partial state
+	// 				logs[{x}, {y}, ..]
+	//                         |
+	//index:			  PrevLogIndex
 
 	if len(rf.logs)-1 >= args.PrevLogIndex {
-
-		// Heartbeat.
-		if args.Entries == nil {
-			return true
-		}
 
 		if args.PrevLogIndex < 0 || args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm {
 
@@ -363,7 +373,12 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 			if rf.commitIndex < args.LeaderCommit {
 				DPrintf("Goroutine: %v, rf %v Begin AppendLog at term :%v, rf.commitIndex: %v, at time %v, logs: %v, args: %v", GetGOId(), rf.me, rf.currentTerm, rf.commitIndex,
 					time.Now().UnixMilli(), rf.logs, args)
-				rf.logs = append(rf.logs, args.Entries[(rf.commitIndex-args.PrevLogIndex-1):]...)
+				if len(rf.logs) == 0 {
+					rf.logs = append(rf.logs, args.Entries...)
+				} else {
+					rf.logs = rf.logs[:args.LeaderCommit-len(args.Entries)]
+					rf.logs = append(rf.logs, args.Entries...)
+				}
 				DPrintf("Goroutine: %v,rf %v End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
 					time.Now().UnixMilli(), rf.logs)
 			}
@@ -373,7 +388,7 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 
 			// Index of highest log entry known to be committed.
 			DPrintf("Goroutine: %v,rf %v End AppendLog at term update rf.commitIndex from %v to %v at time: %v", GetGOId(), rf.me, rf.commitIndex, len(rf.logs), time.Now().UnixMilli())
-			rf.commitIndex = len(rf.logs)
+			//rf.commitIndex = len(rf.logs)
 
 			return true
 		} else {
@@ -437,12 +452,19 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 	defer rf.mu.Unlock()
 	DPrintf("Goroutine: %v,Follower %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
+	// If the follower lack logs.
+	if len(rf.logs)-1 < args.PrevLogIndex || len(rf.logs)+len(args.Entries) < args.LeaderCommit {
+		rf.reElectionForFollower = false
+		reply.Success = false
+		reply.Term = rf.logs[len(rf.logs)-1].Term
+		return
+	}
+
 	// Figure 2, Rules for Servers
 	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	if rf.commitIndex <= args.PrevLogIndex {
+	if rf.commitIndex < args.PrevLogIndex+1 {
+		rf.commitIndex = args.PrevLogIndex + 1
 		rf.applySyncWithLeader(args, rf.commitIndex)
-	} else {
-		rf.applySyncWithLeader(args, args.PrevLogIndex+1)
 	}
 
 	// AppendEntires rule 1.Reply false if term < current Term
@@ -693,9 +715,9 @@ func (rf *Raft) launchElection() {
 
 	// Figure 2, Rules for Servers
 	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	if rf.lastApplied < rf.commitIndex {
-		rf.applyLogs()
-	}
+	// if rf.lastApplied < rf.commitIndex {
+	// 	rf.applyLogs()
+	// }
 
 	// Double-check
 	if rf.role != Candidate {
@@ -775,12 +797,29 @@ func (rf *Raft) launchElection() {
 	rf.processFailedRequest(VoteRequest, updatedTerm)
 }
 
+func Max(x int, y int) int {
+	if x > y {
+		return x
+	} else {
+		return y
+	}
+}
+
+func Min(x int, y int) int {
+	if x < y {
+		return x
+	} else {
+		return y
+	}
+}
+
 // Process the failed request condition.
 
 func (rf *Raft) processFailedRequest(typ int, updatedTerm int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.role = Follower
+	DPrintf("Goroutine %v, %v rf changed to Child", GetGOId(), rf.me)
 	if typ == VoteRequest {
 		if rf.role == Candidate {
 			// Rules for Candidate: $5.2
@@ -855,7 +894,7 @@ func (rf *Raft) processMajoritySuccessAppendRequest(leaderCommitStartIndex int, 
 	// When the majority appended successfully, we update local commitIndex for the next logs to append.
 	// The leader can apply these logs safely. logs[leaderCommitStartIndex, localCommitStartIndex)
 
-	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs: %v at term %v, leaderCommitStartIndex: %v, at time %v", GetGOId(), rf.me, rf.logs, rf.currentTerm, leaderCommitStartIndex, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs: %v at term %v, leaderCommitStartIndex: %v, at time %v, rf.lastApplied :%v, rf.commitIndex: %v", GetGOId(), rf.me, rf.logs, rf.currentTerm, leaderCommitStartIndex, time.Now().UnixMilli(), rf.lastApplied, rf.commitIndex)
 	for i := rf.lastApplied; i < rf.commitIndex; i += 1 {
 
 		rf.applyCh <- ApplyMsg{CommandValid: false, Command: rf.logs[i].Cmd, CommandIndex: i}
@@ -1033,7 +1072,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 			  [1] will send to the follower to append.
 			*/
 			DPrintf("Goroutine: %v, in LeaderAppendEntries rf.nextIndex[%v] :%v, nextIndexToCommit: %v, at term %v time: %v", GetGOId(), i, rf.nextIndex[i], nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli())
-			rq.PrevLogIndex = rf.nextIndex[i] - 1
+			rq.PrevLogIndex = Min(rf.commitIndex-1, rf.nextIndex[i]-1)
 
 			rq.PrevLogTerm = -1
 			if rq.PrevLogIndex >= 0 {
@@ -1063,7 +1102,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 		rf.mu.Lock()
 
 		// if resp.reply.Term > rf.currentTerm {
-		// 	DPrintf("Goroutine: %v, %v rf received response from rf:%v, resp: %v, time :%v, Leader->Follower", GetGOId(), rf.me, resp.server, resp, time.Now().UnixMilli())
+		DPrintf("Goroutine: %v, %v rf received response from rf:%v, resp: %v, time :%v ", GetGOId(), rf.me, resp.server, resp, time.Now().UnixMilli())
 		// 	defer rf.mu.Unlock()
 		// 	rf.role = Follower
 		// 	rf.voteFor = Nobody
@@ -1073,7 +1112,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 		if resp.reply.Term == LostConnection {
 			LostConnectionCnt++
-
+			DPrintf("Goroutine: %v, %v rf received timeout.\n", GetGOId(), rf.me)
 			if LostConnectionCnt >= len(rf.peers)/2+1 {
 				defer rf.mu.Unlock()
 				rf.processNetworkFailure(AppendRequest, true)
@@ -1086,12 +1125,16 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 				}
 
 				return leaderCommitStartIndex
+			} else {
+				rf.mu.Unlock()
+				continue
 			}
 		} else {
 			if resp.reply.Success {
 
 				// New term, or new leader elected during waiting the response.
 				if rf.voteFor != rf.me || rf.currentTerm > currentTerm {
+					defer rf.mu.Unlock()
 					rf.processReElectionCondition(currentTerm, AppendRequest)
 					return InvalidPosition
 				}
@@ -1119,6 +1162,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 					return leaderCommitStartIndex
 				}
+				rf.mu.Unlock()
 			} else {
 				// Record the most updated Term from the peer.
 				if rf.currentTerm < resp.reply.Term {
@@ -1137,10 +1181,9 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 				// Update the rf.nextIndex to the first op command of replied term.
 				rf.updateFollowerNextIndex(resp.server, resp.reply.Term)
 				rejectServer[resp.server] = nil
+				rf.mu.Unlock()
 			}
 		}
-
-		rf.mu.Unlock()
 	}
 
 	rf.processFailedRequest(AppendRequest, updatedTerm)
@@ -1187,14 +1230,14 @@ func (rf *Raft) ticker() {
 
 		case Candidate:
 			rf.mu.Unlock()
-
+			rf.timers[rf.me] = int(time.Now().UnixMilli())
 			go rf.launchElection()
 
 			voteSuccess := <-rf.voteSuccessChannel
 			rf.mu.Lock()
 			if voteSuccess == MajoritySupport {
 				rf.role = Leader
-				DPrintf("Goroutine: %v, %v rf Leader now at term %v", GetGOId(), rf.me, rf.currentTerm)
+				DPrintf("Goroutine: %v, %v rf Leader now at term %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, int(time.Now().UnixMilli())-rf.timers[rf.me])
 				rf.initializeIndexForFollowers()
 
 				rf.mu.Unlock()
@@ -1270,6 +1313,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 	// All elections are launched by the ticker.
 	//rf.reElectionForFollower = true
+
+	rf.timers = make([]int, len(rf.peers))
 
 	rf.minimumElectionTimeDelta = 150
 

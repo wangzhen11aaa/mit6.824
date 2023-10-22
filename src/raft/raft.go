@@ -1243,7 +1243,7 @@ func (rf *Raft) ticker() {
 	// will still provide good availability.
 
 	electionTimeoutV := 150
-	heartbeatTimeoutV := 10
+	heartbeatTimeoutV := 60
 
 	for !rf.killed() {
 		r1 := rand.New(rand.NewSource(time.Now().UnixMilli()))

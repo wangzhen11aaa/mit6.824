@@ -387,7 +387,7 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 			// rf.tryQuickApplyLaggedLogs(args)
 
 			// Index of highest log entry known to be committed.
-			DPrintf("Goroutine: %v,rf %v End AppendLog at term update rf.commitIndex from %v to %v at time: %v", GetGOId(), rf.me, rf.commitIndex, len(rf.logs), time.Now().UnixMilli())
+			// DPrintf("Goroutine: %v,rf %v End AppendLog at term update rf.commitIndex from %v to %v at time: %v", GetGOId(), rf.me, rf.commitIndex, len(rf.logs), time.Now().UnixMilli())
 			//rf.commitIndex = len(rf.logs)
 
 			return true
@@ -450,7 +450,14 @@ func (rf *Raft) applySyncWithLeader(args *RequestAppendEntriesArgs, nextIndexToA
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("Goroutine: %v,Follower %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v, in AppendEntries %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
+
+	// AppendEntires rule 1.Reply false if term < current Term
+	if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
 
 	// If the follower lack logs.
 	if len(rf.logs)-1 < args.PrevLogIndex || len(rf.logs)+len(args.Entries) < args.LeaderCommit {
@@ -460,18 +467,19 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		return
 	}
 
+	// 如果比较prevLogIndex下的logs的Term比Leader的对应位置的Term还小，那么
+	// 说明本节点写入了旧的数据，需要Leader重新发送一批基于当前节点Term的新的数据.
+	if args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
+		reply.Success = false
+		reply.Term = rf.logs[args.PrevLogIndex].Term
+		return
+	}
+
 	// Figure 2, Rules for Servers
 	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 	if rf.commitIndex < args.PrevLogIndex+1 {
 		rf.commitIndex = args.PrevLogIndex + 1
 		rf.applySyncWithLeader(args, rf.commitIndex)
-	}
-
-	// AppendEntires rule 1.Reply false if term < current Term
-	if rf.currentTerm > args.Term {
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
 	}
 
 	// AppendEntries RPC for Receiver implementation. Figure 2. %5.3
@@ -504,15 +512,27 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 // vote log consist check.
 // The candidate should contain the majority items.
 func (rf *Raft) consistLogCheckForVote(args *RequestVoteArgs) bool {
-	DPrintf("%v rf consistLogCheckForVote, rf.logs: %v,args: %v at term %v, time :%v ", rf.me, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
-	if args.LastLogIndex >= 0 && len(rf.logs)-1 >= args.LastLogIndex {
-		if rf.logs[args.LastLogIndex].Term == args.LastLogTerm {
-			if len(rf.logs)-1 > args.LastLogIndex {
+	DPrintf("Goroutine: %v, %v rf consistLogCheckForVote, rf.logs: %v,args: %v at term %v, time :%v ", GetGOId(), rf.me, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
+
+	if len(rf.logs) == 0 {
+		return true
+	} else {
+		// 这里需要判断(不必是同样的index下的Log).
+		// 如果 本地的 rf.logs的最后一个位置p0的Term > 候选人传递过来的最后一个位置p1的Term,那么说明候选人那边的日志有无效的写入.
+		if rf.logs[len(rf.logs)-1].Term > args.LastLogTerm {
+			return false
+		} else if rf.logs[len(rf.logs)-1].Term == args.LastLogTerm {
+			// 如果 本地的 rf.logs的最后位置p0中的Log的Term 与 候选人传递过来的最后位置p1的Term相同，那么谁logs长度长，谁为Leader.
+			if len(rf.logs)-1 <= args.LastLogIndex {
+				return true
+			} else {
 				return false
 			}
+		} else {
+			return true
 		}
 	}
-	return true
+
 }
 
 // example RequestVote RPC handler.
@@ -520,6 +540,8 @@ func (rf *Raft) consistLogCheckForVote(args *RequestVoteArgs) bool {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	DPrintf("Goroutine: %v, %v rf in requestVote, role: %v, rf.logs:%v, rf.voteFor :%v, args: %v at term %v, time: %v", GetGOId(), rf.me, rf.role, rf.logs, rf.voteFor, args, rf.currentTerm, time.Now().UnixMilli())
 
 	// RequestVote rule 1.Reply false if term < currentTerm
 	if rf.currentTerm > args.Term {
@@ -560,8 +582,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// RequestVote RPC rule for receiver: 2.0 If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote.
 	reply.Term = rf.currentTerm
+
 	if rf.voteFor == Nobody || rf.voteFor == args.CandidateId {
-		if args.LastLogIndex >= 0 && len(rf.logs)-1 <= args.LastLogIndex || rf.logs[args.LastLogIndex].Term <= args.LastLogTerm {
+		if len(rf.logs)-1 < 0 || args.LastLogIndex >= 0 && (len(rf.logs)-1 < args.LastLogIndex || len(rf.logs)-1 == args.LastLogIndex && rf.logs[args.LastLogIndex].Term <= args.LastLogTerm) {
+			DPrintf("Goroutine:%v, %v rf role changed from %v to %v, local logs: %v, args: %v", GetGOId(), rf.me, rf.role, Follower, rf.logs, args)
 			//Specifically, if a server receives a RequestVote RPC within
 			// the minimum election timeout of hearing from a cur
 			// rent leader, it does not update its term or grant its vote.
@@ -654,7 +678,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if isLeader {
 		DPrintf("Method Start() Append cmd %v to Leader,at time %v", command, time.Now().UnixMilli())
-		index = rf.LeaderAppendEntries(command)
+		rf.mu.Lock()
+		index = len(rf.logs)
+		rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: len(rf.logs), Cmd: command})
+		rf.mu.Unlock()
 	}
 	return index, term, isLeader
 }
@@ -774,6 +801,7 @@ func (rf *Raft) launchElection() {
 
 				// Term changed or have voted for other peer during the waiting.
 				if rf.voteFor != rf.me && rf.currentTerm > currentTerm {
+					defer rf.mu.Unlock()
 					rf.processReElectionCondition(currentTerm, VoteRequest)
 					return
 				}
@@ -818,8 +846,7 @@ func Min(x int, y int) int {
 func (rf *Raft) processFailedRequest(typ int, updatedTerm int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.role = Follower
-	DPrintf("Goroutine %v, %v rf changed to Child", GetGOId(), rf.me)
+	DPrintf("Goroutine %v, %v rf changed to Follower", GetGOId(), rf.me)
 	if typ == VoteRequest {
 		if rf.role == Candidate {
 			// Rules for Candidate: $5.2
@@ -828,10 +855,16 @@ func (rf *Raft) processFailedRequest(typ int, updatedTerm int) {
 			if updatedTerm > rf.currentTerm {
 				DPrintf("[tryBecomeFollower supported by Minority] %v 's [current role: %v term : %v to Follower]: Term replied : %v at time: %v", rf.me, rf.role, rf.currentTerm, updatedTerm, time.Now().UnixMilli())
 			}
-			rf.voteSuccessChannel <- MinoritySupport
-			rf.reElectionForFollower = true
+
+			DPrintf("Goroutine: %v, %v rf Candidate-> Follower at term %v, time :%v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
+			//rf.voteSuccessChannel <- MinoritySupport
+			time.Sleep(time.Millisecond * 150)
+
+			rf.reElectionForFollower = false
 		}
 	}
+	rf.role = Follower
+	rf.voteFor = Nobody
 }
 
 // Update all the followers' nextIndex
@@ -939,28 +972,37 @@ func (rf *Raft) updateLeaderCommitIndex() {
 
 // Process the success vote request condition.
 func (rf *Raft) processMajoritySuccessVoteRequest() {
-	defer rf.mu.Unlock()
-	rf.voteSuccessChannel <- MajoritySupport
+	rf.role = Leader
+	DPrintf("Goroutine: %v, %v rf Leader now at term %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, int(time.Now().UnixMilli())-rf.timers[rf.me])
+	rf.initializeIndexForFollowers()
+
+	//rf.voteSuccessChannel <- MajoritySupport
+	rf.mu.Unlock()
+	// First insert a on-op log into leader.
+	go rf.LeaderAppendEntries("no-op")
+	time.Sleep(time.Millisecond * 40)
 }
 
 // Process the network failure condition
+// 保持Candidate 角色不变
 func (rf *Raft) processNetworkFailure(typ int, result bool) {
 	// rf.mu.Lock()
 	DPrintf("Goroutine: %v, %v rf Network problem at term %v", GetGOId(), rf.me, rf.currentTerm)
 	if typ == VoteRequest {
-		rf.voteSuccessChannel <- NetWorkProblem
+		DPrintf("Goroutine: %v, %v rf Remain Candidate at term %v, at time:%v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
 	}
 }
 
 func (rf *Raft) processReElectionCondition(currentTerm int, typ int) {
-	defer rf.mu.Unlock()
 	if rf.currentTerm > currentTerm && rf.voteFor != rf.me {
 		DPrintf("Goroutine: %v, [AppendEntries encounter new Term] %v rf Term changed from %v to %v, his role: %v, stop election its voteFor : %v, time: %v\n", GetGOId(), rf.me, currentTerm, rf.currentTerm, rf.role, rf.voteFor, time.Now().UnixMilli())
 	}
+	DPrintf("Goroutine: %v, [AppendEntries processReElectionCondition] %v rf Term changed from %v to %v, his role: %v, stop election its voteFor : %v, time: %v\n", GetGOId(), rf.me, currentTerm, rf.currentTerm, rf.role, rf.voteFor, time.Now().UnixMilli())
 	// rf.role = Follower
 	// rf.reElectionForFollower = false
 	if typ == VoteRequest {
-		rf.voteSuccessChannel <- NewTerm
+		DPrintf("Goroutine: %v, %v rf encountered new term \n", GetGOId(), rf.me)
+		//rf.voteSuccessChannel <- NewTerm
 	} else {
 		rf.role = Follower
 		//rf.LeaderAppendFailedChannel <- false
@@ -975,7 +1017,7 @@ func (rf *Raft) prepareAppendRequest(rq *RequestAppendEntriesArgs) {
 func (rf *Raft) leaderAppendLogLocally(command interface{}) {
 	rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: len(rf.logs), Cmd: command})
 
-	DPrintf("Goroutine:%v, Leader make log added into the %v at term %v", GetGOId(), rf.me, rf.currentTerm)
+	DPrintf("Goroutine:%v, %v rf Leader appended log  at term %v", GetGOId(), rf.me, rf.currentTerm)
 }
 
 func GetGOId() int64 {
@@ -994,6 +1036,7 @@ func GetGOId() int64 {
 	return int64(id)
 }
 
+// 通过二分查找，找到 潜在follower返回Term的第一个元素。
 func (rf *Raft) updateFollowerNextIndex(server int, followerLogTerm int) {
 	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerLogTerm: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerLogTerm)
 	right := len(rf.logs)
@@ -1129,7 +1172,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 				rf.mu.Unlock()
 				continue
 			}
-		} else {
+		} else { // 从peer端有返回.
 			if resp.reply.Success {
 
 				// New term, or new leader elected during waiting the response.
@@ -1233,29 +1276,8 @@ func (rf *Raft) ticker() {
 			rf.timers[rf.me] = int(time.Now().UnixMilli())
 			go rf.launchElection()
 
-			voteSuccess := <-rf.voteSuccessChannel
-			rf.mu.Lock()
-			if voteSuccess == MajoritySupport {
-				rf.role = Leader
-				DPrintf("Goroutine: %v, %v rf Leader now at term %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, int(time.Now().UnixMilli())-rf.timers[rf.me])
-				rf.initializeIndexForFollowers()
+			<-time.After(time.Duration(time.Duration(electionTimeoutV/3)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(50)+int32(rf.me)*5)))
 
-				rf.mu.Unlock()
-
-				// First insert a on-op log into leader.
-				go rf.LeaderAppendEntries("no-op")
-				time.Sleep(time.Millisecond * 40)
-			} else if voteSuccess == NetWorkProblem {
-				time.Sleep(time.Millisecond * 150)
-				rf.mu.Unlock()
-			} else if voteSuccess == NewTerm {
-				//rf.role = Follower
-				rf.mu.Unlock()
-			} else { // Minority Support
-				//rf.role = Follower
-				time.Sleep(time.Millisecond * 150)
-				rf.mu.Unlock()
-			}
 		}
 
 	}

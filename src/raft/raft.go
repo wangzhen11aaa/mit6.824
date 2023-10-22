@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"fmt"
 	"math/rand"
 	"runtime"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -213,6 +215,17 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
+
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+
 	// Your code here (2C).
 	// Example:
 	// w := new(bytes.Buffer)
@@ -229,6 +242,19 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var voteFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+		DPrintf("Error")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.voteFor = voteFor
+		rf.logs = logs
 	}
 	// Your code here (2C).
 	// Example:
@@ -450,6 +476,9 @@ func (rf *Raft) applySyncWithLeader(args *RequestAppendEntriesArgs, nextIndexToA
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// Persist data
+	rf.persist()
+
 	DPrintf("Goroutine: %v, in AppendEntries %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
 	// AppendEntires rule 1.Reply false if term < current Term
@@ -507,6 +536,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 			rf.becomeFollower(args, reply)
 		}
 	}
+
 }
 
 // vote log consist check.
@@ -739,12 +769,6 @@ func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
 func (rf *Raft) launchElection() {
 	// We probably should store some value on the stack, in case other goroutines change the value to stop this election, for example it has voted for other peer, during this election.
 	rf.mu.Lock()
-
-	// Figure 2, Rules for Servers
-	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	// if rf.lastApplied < rf.commitIndex {
-	// 	rf.applyLogs()
-	// }
 
 	// Double-check
 	if rf.role != Candidate {
@@ -1073,6 +1097,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	//If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 	if rf.lastApplied < rf.commitIndex {
 		rf.applyLogs()
+		DPrintf("Goroutine %v, %v rf persist at term %v", GetGOId(), rf.me, rf.currentTerm)
 	}
 
 	currentTerm := rf.currentTerm
@@ -1087,6 +1112,9 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 		// If command received from client: append entry to local log. $5.2 Rules for servers: Leaders part
 		rf.leaderAppendLogLocally(command)
 	}
+
+	// Persist
+	rf.persist()
 
 	// Figure 2 AppendEntries RPC
 	// Update rq.LeaderCommit to leader's commitIndex now.

@@ -220,9 +220,14 @@ func (rf *Raft) persist() {
 	// defer rf.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
+
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.voteFor)
-	e.Encode(rf.logs)
+	if rf.role == Leader {
+		e.Encode(rf.logs[0:rf.lastApplied])
+	} else {
+		e.Encode(rf.logs)
+	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
@@ -252,6 +257,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
 		DPrintf("Error")
 	} else {
+		DPrintf("Goroutine: %v, %v rf readPersist currentTerm: %v, voteFor: %v, logs: %v at term %v, time %v", GetGOId(), rf.me, currentTerm, voteFor, logs, rf.currentTerm, time.Now().UnixMilli())
 		rf.currentTerm = currentTerm
 		rf.voteFor = voteFor
 		rf.logs = logs
@@ -405,6 +411,8 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 					rf.logs = rf.logs[:args.LeaderCommit-len(args.Entries)]
 					rf.logs = append(rf.logs, args.Entries...)
 				}
+				// 当有日志新增进来就进行persist().
+				rf.persist()
 				DPrintf("Goroutine: %v,rf %v End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
 					time.Now().UnixMilli(), rf.logs)
 			}
@@ -437,27 +445,33 @@ func (rf *Raft) applyLogs() {
 	}
 
 	DPrintf("Goroutine:%v, [Follower]%v rf apply Log End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.currentTerm, time.Now().UnixMilli())
-	rf.lastApplied = rf.commitIndex
+
+	if rf.commitIndex > rf.lastApplied {
+
+		rf.lastApplied = rf.commitIndex
+		// Persist data
+		rf.persist()
+	}
 
 }
 
 func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 
-	DPrintf("Goroutine %v,%v rf [remainFollower] response to %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, args.Term, time.Now().UnixMilli())
+	DPrintf("Goroutine %v, %v rf [remainFollower] response to %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, args.Term, time.Now().UnixMilli())
 	rf.reElectionForFollower = false
 	rf.voteFor = args.LeaderId
 	rf.latestSuccessfullyAppendTimeStamp = time.Now().UnixMilli()
 
-	DPrintf("Goroutine %v,before consistLogCheck: %v ", GetGOId(), rf.logs)
+	DPrintf("Goroutine %v, %v rf before consistLogCheck: %v ", GetGOId(), rf.me, rf.logs)
 	// try Append logs
 	reply.Success = rf.consistLogCheck(args)
-	DPrintf("Goroutine %v,after consistLogCheck: %v ", GetGOId(), rf.logs)
+	DPrintf("Goroutine %v, %v rf after consistLogCheck: %v ", GetGOId(), rf.me, rf.logs)
 	if !reply.Success {
 		reply.Term = rf.logs[rf.commitIndex-1].Term
 	} else {
 		reply.Term = rf.currentTerm
 	}
-	DPrintf("Goroutine: %v,%v rf [remainFollower] ended response to %v, result: %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, reply.Success, args.Term, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v, %v rf [remainFollower] ended response to %v, result: %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, reply.Success, args.Term, time.Now().UnixMilli())
 
 }
 
@@ -470,19 +484,20 @@ func (rf *Raft) applySyncWithLeader(args *RequestAppendEntriesArgs, nextIndexToA
 		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, rf.logs[i].Cmd, i, rf.currentTerm, time.Now().UnixMilli())
 	}
 	DPrintf("Goroutine:%v, [Follower]%v rf applySyncWithLeader End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, i, rf.currentTerm, time.Now().UnixMilli())
+
 	rf.lastApplied = i
+
 }
 
 func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// Persist data
-	rf.persist()
 
 	DPrintf("Goroutine: %v, in AppendEntries %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
 	// AppendEntires rule 1.Reply false if term < current Term
 	if rf.currentTerm > args.Term {
+		DPrintf("Goroutine: %v, %v rf returned false because of %v < %v at term %v at time:%v", GetGOId(), rf.me, args.Term, rf.currentTerm, rf.currentTerm, time.Now().UnixMilli())
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -490,15 +505,23 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 
 	// If the follower lack logs.
 	if len(rf.logs)-1 < args.PrevLogIndex || len(rf.logs)+len(args.Entries) < args.LeaderCommit {
+		DPrintf("Goroutine: %v, %v rf returned false because of len(rf.logs): %v + len(args.Entries): %v < args.LeaderCommit: %v at term %v at time:%v", GetGOId(), rf.me, len(rf.logs), len(args.Entries), args.LeaderCommit, rf.currentTerm, time.Now().UnixMilli())
+		// 如果收到某个Leader的消息，但是日志不全,需要再次传输PrevLogIndex之前的Term.
 		rf.reElectionForFollower = false
 		reply.Success = false
-		reply.Term = rf.logs[len(rf.logs)-1].Term
+		// Bug 如果rf.logs长度是0，那么下面会越界访问
+		if len(rf.logs) > 0 {
+			reply.Term = rf.logs[len(rf.logs)-1].Term
+		} else {
+			reply.Term = 1
+		}
 		return
 	}
 
 	// 如果比较prevLogIndex下的logs的Term比Leader的对应位置的Term还小，那么
 	// 说明本节点写入了旧的数据，需要Leader重新发送一批基于当前节点Term的新的数据.
 	if args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
+		DPrintf("Goroutine: %v, %v rf returned false because of rf.logs[args.PrevLogIndex]: %v < args.PrevLogTerm: %v at term %v at time:%v", GetGOId(), rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm, rf.currentTerm, time.Now().UnixMilli())
 		reply.Success = false
 		reply.Term = rf.logs[args.PrevLogIndex].Term
 		return
@@ -507,6 +530,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 	// Figure 2, Rules for Servers
 	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 	if rf.commitIndex < args.PrevLogIndex+1 {
+		DPrintf("Goroutine: %v, %v rf will apply logs between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex+1, rf.currentTerm, time.Now().UnixMilli())
 		rf.commitIndex = args.PrevLogIndex + 1
 		rf.applySyncWithLeader(args, rf.commitIndex)
 	}
@@ -808,8 +832,16 @@ func (rf *Raft) launchElection() {
 	// channel for vote
 	for i := 0; i < len(rf.peers)-1; i++ {
 		reply := <-voteChannel
-
 		rf.mu.Lock()
+		DPrintf("Goroutine: %v,%v rf requestVote receive %v, at term %v, time :%v", GetGOId(), rf.me, reply, rf.currentTerm, time.Now().UnixMilli())
+
+		// 如果rf.role有变化,直接直接返回
+		if rf.role != Candidate {
+			DPrintf("Goroutine: %v, %v rf changed role from 1 to %v at term : %v, time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, time.Now().UnixMilli())
+			defer rf.mu.Unlock()
+			return
+		}
+
 		// Network problem
 		if reply.Term == LostConnection {
 			lostConnectionCnt++
@@ -843,6 +875,7 @@ func (rf *Raft) launchElection() {
 				}
 			}
 		}
+		DPrintf("Goroutine: %v,%v [rf.mu.Unlock()]rf requestVote receive %v, at term %v, time :%v", GetGOId(), rf.me, reply, rf.currentTerm, time.Now().UnixMilli())
 		rf.mu.Unlock()
 	}
 
@@ -960,7 +993,13 @@ func (rf *Raft) processMajoritySuccessAppendRequest(leaderCommitStartIndex int, 
 
 	DPrintf("Goroutine:%v,[Leader] %v rf apply Log End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.currentTerm, time.Now().UnixMilli())
 
-	rf.lastApplied = rf.commitIndex
+	if rf.commitIndex > rf.lastApplied {
+		rf.lastApplied = rf.commitIndex
+
+		// Persist data
+		rf.persist()
+	}
+
 }
 
 // Update leader commit index.
@@ -1113,9 +1152,6 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 		rf.leaderAppendLogLocally(command)
 	}
 
-	// Persist
-	rf.persist()
-
 	// Figure 2 AppendEntries RPC
 	// Update rq.LeaderCommit to leader's commitIndex now.
 
@@ -1143,7 +1179,12 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 			  [1] will send to the follower to append.
 			*/
 			DPrintf("Goroutine: %v, in LeaderAppendEntries rf.nextIndex[%v] :%v, nextIndexToCommit: %v, at term %v time: %v", GetGOId(), i, rf.nextIndex[i], nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli())
-			rq.PrevLogIndex = Min(rf.commitIndex-1, rf.nextIndex[i]-1)
+
+			if rf.commitIndex < 0 {
+				rq.PrevLogIndex = rf.nextIndex[i] - 1
+			} else {
+				rq.PrevLogIndex = Min(rf.commitIndex-1, rf.nextIndex[i]-1)
+			}
 
 			rq.PrevLogTerm = -1
 			if rq.PrevLogIndex >= 0 {
@@ -1270,8 +1311,8 @@ func (rf *Raft) ticker() {
 	// outs are unlikely to cause unnecessary leader changes and
 	// will still provide good availability.
 
-	electionTimeoutV := 150
-	heartbeatTimeoutV := 60
+	electionTimeoutV := 120
+	heartbeatTimeoutV := 40
 
 	for !rf.killed() {
 		r1 := rand.New(rand.NewSource(time.Now().UnixMilli()))

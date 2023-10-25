@@ -372,7 +372,11 @@ func (rf *Raft) becomeFollower(args *RequestAppendEntriesArgs, reply *AppendEntr
 
 	reply.Success = rf.consistLogCheck(args)
 	if !reply.Success {
-		reply.Term = rf.logs[rf.commitIndex-1].Term
+		if rf.commitIndex == 0 {
+			reply.Term = rf.logs[0].Term
+		} else {
+			reply.Term = rf.logs[rf.commitIndex-1].Term
+		}
 	} else {
 		reply.Term = rf.currentTerm
 	}
@@ -399,7 +403,10 @@ func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
 	if len(rf.logs)-1 >= args.PrevLogIndex {
 
 		if args.PrevLogIndex < 0 || args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm {
-
+			if args.PrevLogIndex+1 != args.Entries[0].Idx {
+				DPrintf("Goroutine: %v, rf %v args.PrevLogTerm: %v != args.Entries[0].Term: %v, args.PrevLogIndex+1:%v != args.Entries[0].Idx: %v, at term: %v, time: %v ", GetGOId(), rf.me, args.PrevLogTerm, args.Entries[0].Term, args.PrevLogIndex+1, args.Entries[0].Idx, rf.currentTerm, time.Now().UnixMilli())
+				return false
+			}
 			// Leader's append should be idempotent.
 			// Sync logs with leader.
 			if rf.commitIndex < args.LeaderCommit {
@@ -467,11 +474,15 @@ func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntr
 	reply.Success = rf.consistLogCheck(args)
 	DPrintf("Goroutine %v, %v rf after consistLogCheck: %v ", GetGOId(), rf.me, rf.logs)
 	if !reply.Success {
-		reply.Term = rf.logs[rf.commitIndex-1].Term
+		if rf.commitIndex == 0 {
+			reply.Term = rf.logs[0].Term
+		} else {
+			reply.Term = rf.logs[rf.commitIndex-1].Term
+		}
 	} else {
 		reply.Term = rf.currentTerm
 	}
-	DPrintf("Goroutine: %v, %v rf [remainFollower] ended response to %v, result: %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, reply.Success, args.Term, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v, %v rf [remainFollower] ended response to %v, reply: %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, reply, args.Term, time.Now().UnixMilli())
 
 }
 
@@ -511,29 +522,41 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		reply.Success = false
 		// Bug 如果rf.logs长度是0，那么下面会越界访问
 		if len(rf.logs) > 0 {
-			reply.Term = rf.logs[len(rf.logs)-1].Term
+			if rf.commitIndex > 0 {
+				reply.Term = rf.logs[rf.commitIndex-1].Term
+			} else {
+				reply.Term = rf.logs[rf.commitIndex].Term
+			}
 		} else {
 			reply.Term = 1
 		}
 		return
 	}
 
+	// if len(rf.logs)-1 >= args.PrevLogIndex {
+
+	// 	if args.PrevLogIndex < 0 || args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm {
+	// 		if args.PrevLogTerm != args.Entries[0].Term && args.PrevLogIndex+1 != args.Entries[0].Idx {
+	// 			DPrintf("Goroutine: %v, rf %v args.PrevLogTerm: %v != args.Entries[0].Term: %v, args.PrevLogIndex+1:%v != args.Entries[0].Idx: %v, at term: %v, time: %v ", GetGOId(), rf.me, args.PrevLogTerm, args.Entries[0].Term, args.PrevLogIndex+1, args.Entries[0].Idx, rf.currentTerm, time.Now().UnixMilli())
+	// 			reply.Success = false
+	// 			// Bug 如果rf.logs长度是0，那么下面会越界访问
+	// 			if len(rf.logs) > 0 {
+	// 				reply.Term = rf.logs[len(rf.logs)-1].Term
+	// 			} else {
+	// 				reply.Term = 1
+	// 			}
+	// 		}
+	// 	}
+	// }
+
 	// 如果比较prevLogIndex下的logs的Term比Leader的对应位置的Term还小，那么
 	// 说明本节点写入了旧的数据，需要Leader重新发送一批基于当前节点Term的新的数据.
-	if args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
-		DPrintf("Goroutine: %v, %v rf returned false because of rf.logs[args.PrevLogIndex]: %v < args.PrevLogTerm: %v at term %v at time:%v", GetGOId(), rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm, rf.currentTerm, time.Now().UnixMilli())
-		reply.Success = false
-		reply.Term = rf.logs[args.PrevLogIndex].Term
-		return
-	}
-
-	// Figure 2, Rules for Servers
-	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	if rf.commitIndex < args.PrevLogIndex+1 {
-		DPrintf("Goroutine: %v, %v rf will apply logs between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex+1, rf.currentTerm, time.Now().UnixMilli())
-		rf.commitIndex = args.PrevLogIndex + 1
-		rf.applySyncWithLeader(args, rf.commitIndex)
-	}
+	// if args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term < args.PrevLogTerm {
+	// 	DPrintf("Goroutine: %v, %v rf returned false because of rf.logs[args.PrevLogIndex]: %v < args.PrevLogTerm: %v at term %v at time:%v", GetGOId(), rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm, rf.currentTerm, time.Now().UnixMilli())
+	// 	reply.Success = false
+	// 	reply.Term = rf.logs[args.PrevLogIndex].Term
+	// 	return
+	// }
 
 	// AppendEntries RPC for Receiver implementation. Figure 2. %5.3
 
@@ -551,7 +574,6 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		// If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate, convert to candidate.
 		if rf.role == Follower {
 			rf.remainFollower(args, reply)
-			return
 		}
 
 		// Rule for Candidate: $5.2
@@ -559,6 +581,21 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		if rf.role == Candidate {
 			rf.becomeFollower(args, reply)
 		}
+	}
+
+	// 如果Append Log校验失败,那么直接返回，不能apply这些logs，因为这里面可能有过期的log.
+	if !reply.Success {
+		DPrintf("Goroutine: %v, %v rf will not apply logs (for append failed) between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex+1, rf.currentTerm, time.Now().UnixMilli())
+
+		return
+	}
+
+	// Figure 2, Rules for Servers
+	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
+	if rf.commitIndex < args.PrevLogIndex+1 {
+		DPrintf("Goroutine: %v, %v rf will apply logs between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex+1, rf.currentTerm, time.Now().UnixMilli())
+		rf.commitIndex = args.PrevLogIndex + 1
+		rf.applySyncWithLeader(args, rf.commitIndex)
 	}
 
 }
@@ -1100,20 +1137,26 @@ func GetGOId() int64 {
 }
 
 // 通过二分查找，找到 潜在follower返回Term的第一个元素。
-func (rf *Raft) updateFollowerNextIndex(server int, followerLogTerm int) {
-	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerLogTerm: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerLogTerm)
+func (rf *Raft) updateFollowerNextIndex(server int, followerExpectTerm int) {
+	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerExpectTerm: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerExpectTerm)
 	right := len(rf.logs)
 	left := 0
 	for left < right {
 		mid := (left + right) / 2
-		if rf.logs[mid].Term >= followerLogTerm {
+		if rf.logs[mid].Term >= followerExpectTerm {
 			right = mid - 1
 		} else {
 			left = mid + 1
 		}
 	}
-	DPrintf("Goroutine: %v, result: %v, target index: %v, logs: %v, targetTerm: %v", GetGOId(), right, right+1, rf.logs, followerLogTerm)
-	rf.nextIndex[server] = right + 1
+	DPrintf("Goroutine: %v, found result: %v, logs: %v, targetTerm: %v", GetGOId(), right, rf.logs, followerExpectTerm)
+	if right < left {
+		rf.nextIndex[server] = right + 1
+		DPrintf("Goroutine: %v, found result: %v, logs: %v, targetTerm: %v", GetGOId(), right+1, rf.logs, followerExpectTerm)
+	} else {
+		rf.nextIndex[server] = right
+		DPrintf("Goroutine: %v, found result: %v, logs: %v, targetTerm: %v", GetGOId(), right, rf.logs, followerExpectTerm)
+	}
 }
 
 // Update nextIndex and matchIndex for this server.
@@ -1178,9 +1221,9 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 			rq.PreviousIndex is the leader's latest index, at which the log has been committed. [rq.PreviousIndex+1, rq.LeaderCommit) are logs to committed for these follower, at the first time.
 			  [1] will send to the follower to append.
 			*/
-			DPrintf("Goroutine: %v, in LeaderAppendEntries rf.nextIndex[%v] :%v, nextIndexToCommit: %v, at term %v time: %v", GetGOId(), i, rf.nextIndex[i], nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli())
+			DPrintf("Goroutine: %v, in LeaderAppendEntries rf.nextIndex[%v] :%v, rf.commitIndex: %v, nextIndexToCommit: %v, at term %v time: %v", GetGOId(), i, rf.nextIndex[i], rf.commitIndex, nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli())
 
-			if rf.commitIndex < 0 {
+			if rf.commitIndex <= 0 {
 				rq.PrevLogIndex = rf.nextIndex[i] - 1
 			} else {
 				rq.PrevLogIndex = Min(rf.commitIndex-1, rf.nextIndex[i]-1)
@@ -1190,6 +1233,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 			if rq.PrevLogIndex >= 0 {
 				rq.PrevLogTerm = rf.logs[rq.PrevLogIndex].Term
 			}
+
 			for idx := rf.nextIndex[i]; idx < nextIndexToCommit; idx++ {
 				rq.Entries = append(rq.Entries, rf.logs[idx])
 			}

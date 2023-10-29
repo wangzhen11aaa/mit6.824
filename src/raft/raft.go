@@ -97,11 +97,6 @@ const (
 const (
 	NoLeader = -1
 )
-
-const (
-	InvalidPosition = -1
-)
-
 const (
 	LostConnection = -1
 	ReSend         = 0
@@ -174,18 +169,21 @@ type Raft struct {
 	// channel for applyCh
 	applyCh chan ApplyMsg
 
+	// 这里的to be不是将来时，而是已知的已经被committed的下标。
 	// Index of highest log entry known to be committed.(Initialized to 0, increases monotonically).
 	// The leader keeps track of the highest index it knows to be committed, and it includes that index in future AppendEntries RPCs(including heartbeats) so that the other servers eventually find out.
 	commitIndex int
 
+	// 这里也是一样，lastApplied也是已知的已经被applied的下标。
 	// Index of highest log entry applied to state machine. Initialized to 0, increased monotonically
 	lastApplied int
 
 	// The following two need to be Reinitialized after election.
-
+	// 这里的next指明的是已经被committed的下一个要被committed位置。
 	// For each server, index of the next log entry to send to that server. (Initialized to leader last log index + 1)
 	nextIndex []int
 
+	// 用于记录各个Follower已知的被committed的最后一条的下标。
 	// For each server, index highest log entry known to be replicated on server. (Initialized to 0, increases monotonically)
 	matchIndex []int
 
@@ -231,8 +229,22 @@ func (rf *Raft) persist() {
 
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.voteFor)
+	// Leader将所有日志都persist()之后的情况会发生两种，
+	// 存在极端情况，即
+	//	1. client->Leader, (Leader Append)
+	//  2. Leader->Followers (Append),
+	//  3. Followers Append Successfully,
+	//  4. Leader crash before return to Client.
+	// 结果为Client收到Leader的异常，但是集群已经committed成功。但是Leader没有返回到Client.
+	// 此时分为两种情况
+	// 第一种: Leader 进行了Persist,(那么结果并没有丢,第一种情况如果3节点中，2个Followers都成功进行了Persist,如果此时Leader 也Persist()成功，那么数据就丢不了.第二种情况，即此时只有一个Follower成功进行了Persist(),因为Leader也成功进行了Persist(),即数据已经被committed，数据不会丢)
+	// 第二种: Leader 没有完成Persist(),便Crash,如果数据被committed,那么Client虽然收到Leader crash的Error，但是数据还是被写入了。如果是3节点中仅仅有1个Follower进行了Persist(),如果使用的是对rf.logs整体进行的Persist()，那么Leader会在上一次persist()时，将刚刚写入的Logs进行Persist()。
+	// 为了满足，只要数据已经存储在Majority的节点即为committed的性质，下面需要对所有的Logs进行 Persist(). // Leader只对已经committed的日志进行Persist.
+	// 否则，如果Leader在LeaderAppendEntries开始就进行persist() 会出现两个问题
+	// 1. 所有的调用都会调用persist(),那么普通的heartbeat也调用persist()这样开销很大。
+	// 2. 会出现混乱提交，比如出现一种情况，比如5个节点，Raft1 刚刚选举为Leader就断网了，那么它会继续接受Client的请求并且一直persist().此时Term为Term0。剩余节点选举出Leader Raft2 此时Term为Term1 (Term1 > Term0),集群并没有做任何Log提交，然后Raft1重启联网，从Follower->Candidate, Term0变为Term1,并且其Logs的长度比其他节点都长，此时Raft1 开始将日志Append给其他Follower,但是其实这些并没有committed,却被当做了Committed的Log。加入存在另外一个Raftx表现和Raft1一致，但是最后状态比Raft1的Term更大，那么Raftx的Log会被再Apply一次，相当于同一个位置的有不同的Log提交，导致冲突。
 	if rf.role == Leader {
-		e.Encode(rf.logs[0 : rf.commitIndex+1])
+		e.Encode(rf.logs[:rf.commitIndex+1])
 	} else {
 		e.Encode(rf.logs)
 	}
@@ -269,6 +281,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.voteFor = voteFor
 		rf.logs = logs
+		// 用户重启之后的身份是Follower,此时需要再次选举。
 		rf.role = Follower
 	}
 
@@ -617,11 +630,8 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		return
 	}
 
-	// Figure 2, Rules for Servers
-	// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-	// 有三种情况，
-	// 1.rf.commitIndex < args.PrevLogIndex+1:在Follower不断从Leader那边获取日志的时候,就是这种情况。说明有新的需要committed的Log被apply.
-	// 2.rf.commitIndex >= args.PrevLogIndex+1的 应该是比较少见的。即使是Follower的本地log需要Overwrite,也是从Leader最少的Log就可以，没有必要让args.PrevLogIndex回退超过Follower的rf.commitIndex-1的位置。
+	// 1.rf.commitIndex < args.PrevLogIndex:在Follower不断从Leader那边获取日志的时候,就是这种情况。说明有新的需要committed的Log被apply.
+	// 2.rf.commitIndex >= args.PrevLogIndex,代码逻辑走到这里，这种情况不会出现，即Follower的commitIndex小于Leader的PrevLogIndex，因为是Leader的commitIndex除了在刚刚重启并选为Leader的时候，发送PrevLogIndex=0可能小于存活的Follower,其他不可能。
 	if rf.commitIndex < args.PrevLogIndex {
 		DPrintf("Goroutine: %v, %v rf will apply logs between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex, rf.currentTerm, time.Now().UnixMilli())
 		rf.commitIndex = args.PrevLogIndex
@@ -632,7 +642,8 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 		logs := append([]LogEntry(nil), rf.logs...)
 		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex
-
+		// Figure 2, Rules for Servers
+		// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 		go rf.applySyncWithLeader(args, lastApplied, commitIndex, logs, rf.me)
 
 		rf.lastApplied = rf.commitIndex
@@ -648,25 +659,20 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 func (rf *Raft) consistLogCheckForVote(args *RequestVoteArgs) bool {
 	DPrintf("Goroutine: %v, %v rf consistLogCheckForVote, rf.logs: %v,args: %v at term %v, time :%v ", GetGOId(), rf.me, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
-	if len(rf.logs) == 0 {
-		return true
-	} else {
-		// 这里需要判断(不必是同样的index下的Log).
-		// 如果 本地的 rf.logs的最后一个位置p0的Term > 候选人传递过来的最后一个位置p1的Term,那么说明候选人那边的日志有无效的写入.
-		if rf.logs[len(rf.logs)-1].Term > args.LastLogTerm {
-			return false
-		} else if rf.logs[len(rf.logs)-1].Term == args.LastLogTerm {
-			// 如果 本地的 rf.logs的最后位置p0中的Log的Term 与 候选人传递过来的最后位置p1的Term相同，那么谁logs长度长，谁为Leader.
-			if len(rf.logs)-1 <= args.LastLogIndex {
-				return true
-			} else {
-				return false
-			}
-		} else {
+	// 这里需要判断(不必是同样的index下的Log).
+	// 如果 本地的 rf.logs的最后一个位置p0的Term > 候选人传递过来的最后一个位置p1的Term,那么说明候选人那边的日志有无效的写入.
+	if rf.logs[len(rf.logs)-1].Term > args.LastLogTerm {
+		return false
+	} else if rf.logs[len(rf.logs)-1].Term == args.LastLogTerm {
+		// 如果 本地的 rf.logs的最后位置p0中的Log的Term 与 候选人传递过来的最后位置p1的Term相同，那么谁logs长度长，谁为Leader.
+		if len(rf.logs)-1 <= args.LastLogIndex {
 			return true
+		} else {
+			return false
 		}
+	} else {
+		return true
 	}
-
 }
 
 // example RequestVote RPC handler.
@@ -1038,6 +1044,7 @@ func (rf *Raft) processMajoritySuccessAppendRequest(commitIndex int, lastApplied
 }
 
 // Update leader commit index.
+// 算法解决的是，在matchIndex[] 数组中，找到N，这个N是大于matchIndex中超过一半的最大值。
 func (rf *Raft) updateLeaderCommitIndex() {
 	// Find the N, that N > commitIndex, a majority of matchIndex[i] >= N and log[N].term == currentTerm: set commitIndex = N.
 	cnt := make(map[int]int)
@@ -1109,6 +1116,7 @@ func (rf *Raft) updateLeaderCommitIndex() {
 }
 
 // Process the success vote request condition.
+// 如果此选举人被超过1/2的人支持，那么就将当前节点进行初始化。
 func (rf *Raft) processMajoritySuccessVoteRequest() {
 	rf.role = Leader
 	DPrintf("Goroutine: %v, %v rf Leader now at term %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, int(time.Now().UnixMilli())-rf.timers[rf.me])
@@ -1188,12 +1196,15 @@ func (rf *Raft) updateFollowerNextIndex(server int, followerExpectTerm int) {
 
 	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerExpectTerm: %v, commitIndex: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerExpectTerm, rf.commitIndex)
 
+	// 这种情况发生在，当Leader重启时，连续两次发送LeaderAppendEntries信号给server s, server 都进行了返回。
+	// 因为如果第一次Leader在收到server s 的返回时就将rf.nextIndex[s]设置为0，那么后面返回给leader的请求就会直接以0作为计算。
 	if rf.nextIndex[server] == 0 {
 		rf.nextIndex[server] = 1
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 		return
 	}
 	// nextIndex数组中存储的是下一个需要发送的位置。所以直接拿rf.logs去访问理论上会出错的。
+	// 在 rf.logs[left, right]中使用二分法，其中left是小于followerExpectTerm的最大元素位置,right是rf.next[server]-1.
 	if rf.logs[rf.nextIndex[server]-1].Term == followerExpectTerm {
 
 		n := rf.nextIndex[server] - 1
@@ -1208,7 +1219,8 @@ func (rf *Raft) updateFollowerNextIndex(server int, followerExpectTerm int) {
 		return
 
 	} else {
-		// 下面二分查找，查找刚刚好>followerExpectTerm的第一个Log的位置。
+		// 如果返回的followerExpectTerm与rf.nextIndex[server]-1的Term并不相同，那么直接使用二分法，找到
+		// 下面二分查找，在rf.logs中找到刚刚好>followerExpectTerm的第一个Log的位置，作为下一条需要发送的位置。
 		right := len(rf.logs)
 		left := 0
 		for left < right {
@@ -1243,12 +1255,12 @@ func (rf *Raft) updateNextIndexAndMatchIndex(server int, nextIndexToCommit int) 
 
 }
 
-func (rf *Raft) LeaderAppendEntries(command interface{}) int {
+func (rf *Raft) LeaderAppendEntries(command interface{}) {
 	rf.mu.Lock()
 
 	if rf.role != Leader {
 		defer rf.mu.Unlock()
-		return InvalidPosition
+		return
 	}
 
 	currentTerm := rf.currentTerm
@@ -1256,13 +1268,13 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	rq := RequestAppendEntriesArgs{}
 	rf.prepareAppendRequest(&rq)
 
-	leaderCommitStartIndex := len(rf.logs)
+	//leaderCommitStartIndex := len(rf.logs)
 
-	if command != nil {
-		// First append local log
-		// If command received from client: append entry to local log. $5.2 Rules for servers: Leaders part
-		rf.leaderAppendLogLocally(command)
-	}
+	//if command != nil {
+	// First append local log
+	// If command received from client: append entry to local log. $5.2 Rules for servers: Leaders part
+	//	rf.leaderAppendLogLocally(command)
+	//}
 
 	// Figure 2 AppendEntries RPC
 	// Update rq.LeaderCommit to leader's commitIndex now.
@@ -1281,41 +1293,28 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 			DPrintf("Goroutine: %v, %v rf in LeaderAppendEntries rf.nextIndex%v :%v, rf.commitIndex: %v, nextIndexToCommit: %v, at term %v time: %v, resendModeMap: %v", GetGOId(), rf.me, i, rf.nextIndex[i], rf.commitIndex, nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli(), rf.resendModeMap)
 
-			// PrevLogIndex 需要是在集群中已经committed的值,其中rf.commitIndex < rf.nextIndex中的值.
-			// 当logs中没有值时，前一个Log是-1.
-			//
-			// 如果日志需要从某个Term的第一个Log开始重新传输到Follower时，此时会使所有Follower都要求重新传送.
-			// 存在某种情况即，有少数的server需要传输更多的Log,因此导致rf.nextIndex[s] < rf.commitIndex，这些需要特殊考虑。
-			// rq.PrevLogIndex 只等于rf.commitIndex与rf.nextIndex[i]中的较小者。
-			// 比较特殊的一种情况是，当Leader crash重新启动时,Leader进行的第一步AppendEntries的需要一定失败，需要
-			// Follower返回给Leader的信息，这个信息包含需要传送的信息的Term(这个Term一般等于 Peer的 rf.logs[rf.commitIndex-1].Term)。因为Follower的commitIndex更新时跟随Leader变化的，Leader变化大部分是跟随Majority的Follower而更新。
 			// 一共存在三种组合:
-			//  1. 当rq.PrevLogIndex < rf.commitIndex:
-			//		 发送到的节点i 是落后于Majority数据的。因为rq.PrevLogIndex等于rf.nextIndex[i]-1 = server i 的commitIndex-1，所以发送给当前节点是正确的。
-			//  2. 当rq.PrevLogIndex == rf.commitIndex:
-			//		 发送到的节点i, 与Majority数据同步，所以是正确的。
-			//  3. 当rq.PrevLogIndex > rf.commitIndex:
-			//	  	 发送到的节点i,超前于Majority的数据，此时 请求中的rq.PrevLogIndex+1并不等于 args.Entries[0].Idx，但是没有关系，提前发送过去的Log并不会被apply。因为Follower的apply动作是由 args.PrevLogIndex决定的，apply的位置不会超过 args.PrevLogIndex。
-
-			//  情况3存在一种特殊情况，即当Leader重启时，Leader的commitIndex是根据Follower的CommitIndex-1所在位置的Log的Term提供的。
-			//  返回到Leader,我们会利用这个Term找到在Leader的Logs中比此Term大的最小元素的下标作为nextIndex需要传输的起始点,并用来更新matchIndex.
-			//  根据matchIndex中的数值，我们找到某个最大的位置Pos，这个Pos刚刚好超过matchIndex中Majority的数量。
-			//  此时，有一种情况,对于某一个server s，即rf.commitIndex < rf.nextIndex[s]; 即Leader的下一次传输，args.PrevLogIndex = rf.commitIndex-1,但是 Logs起始地址是从 rf.nextIndex[s]开始的，这样会让rf.logs[rf.commitIndex, rf.nextIndex[s]-1]的日志不能够重写。导致数据错误。
+			// 对于某一个server
+			//  1. 当rf.nextIndex[server]-1 < rf.commitIndex:
+			//		 当前server的Follower 落后于Majority数据的。
+			//  2. 当rf.nextIndex[server]-1 == rf.commitIndex:
+			//		 当前server的Follower, 与Majority数据同步，所以是正确的。
+			//  3. 当rf.nextIndex[server]-1 > rf.commitIndex:
+			//	  	 当前server的Follower, 超前于Majority的数据，此时 请求中的rq.PrevLogIndex+1 并不等于这一次发送给args.Entries[0].Idx，但是没有关系，提前发送过去的Log并不会被apply。因为Follower的apply动作是由 args.PrevLogIndex决定的，apply的位置不会超过 args.PrevLogIndex。
 
 			// 如果数据属于重新传输的模式，那么args.PrevLogIndex和args.Entries[0].Idx必须是相邻的,不能跳跃。
-
-			// 有一种极特殊的情况，就是将args.PrevLogIndex+1等于Follower的commitIndex的日志传送过去之后，本来是希望，通过Follower的返回值来更新Leader的commitIndex以及nextIndex的值，如果一切正常那么会正常运行下去，但是在Follower返回值到来之前，却又触发了一次心跳，那么Leader会利用上一次的commitIndex以及nextIndex来进行AppendLogs，此时Leader的commitIndex由于没有被更新，还是0，由此出现-1的argsPrevLogIndex又发送到Follower。这个Bug通过下面的代码，理论上可以修复，即在resend逻辑中，增加通过matchIndex来更新Leader commitIndex的逻辑。这样做会让后面的心跳触发的AppendEntries的逻辑会使用上Leader正确的commitIndex.
-
 			if _, ok := rf.resendModeMap[i]; ok {
 				rq.PrevLogIndex = rf.nextIndex[i] - 1
-				if rq.PrevLogIndex == -1 {
+				if rq.PrevLogIndex < 0 {
 					rq.PrevLogTerm = 0
 				} else {
 					rq.PrevLogTerm = rf.logs[rq.PrevLogIndex].Term
 				}
+
 				for idx := rq.PrevLogIndex + 1; idx < nextIndexToCommit; idx++ {
 					rq.Entries = append(rq.Entries, rf.logs[idx])
 				}
+
 				delete(rf.resendModeMap, i)
 			} else {
 				if rf.nextIndex[i] < rf.commitIndex {
@@ -1335,10 +1334,8 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 				}
 			}
 			rqCopy := rq
-			// 当新选为Leader并且从Persist中恢复了Logs时，发送给所有的集群其他节点都是此logs模式:{term, leader, -1, -1,[{term, rf.logs[len(rf.logs)], no-op},...]}]}
-			// ...表示刚刚成为Leader的节点马上接受到了新的Append请求。
-			// 为了等待Follower返回为false,并且希望更新commitIndex以及新的nextIndex值。
-			// 如果到某个follower s 出现网络问题，那么Leader会重复以rf.commitIndex以及rf.nextIndex[s]进行重复发送。
+
+			// 如果到某个节点server follower 出现网络问题，那么Leader会以最新的rf.commitIndex以及上一次的rf.nextIndex[s]进行重复发送,这样的发送方式会被Follower拒绝，因为该Follower没有更新commitIndex,导致rf.commitIndex < args.PrevLogIndex,导致日志重新传送。
 			DPrintf("Goroutine: %v, rf [Leader] %v, logs: %v, sends AppendEntry args %v to follower %v, at term %v \n, time :%v", GetGOId(), rf.me, rf.logs, rqCopy, i, rf.currentTerm, time.Now().UnixMilli())
 			go rf.sendAppendEntries(i, &rqCopy, &replies[i], resultChan, nextIndexToCommit)
 		}
@@ -1350,8 +1347,6 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 	LostConnectionCnt := 1
 	successCnt := 1
 	reSendLogCnt := 1
-	// rejectServer := make(map[int]interface{})
-	// approveServer := make(map[int]interface{})
 
 	for i := 0; i < len(rf.peers)-1; i++ {
 
@@ -1364,14 +1359,14 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 		if currentTerm < rf.currentTerm {
 			DPrintf("Goroutine: %v, %v rf Leader term changed from %v to %v at time %v", GetGOId(), rf.me, currentTerm, rf.currentTerm, time.Now().UnixMilli())
 			defer rf.mu.Unlock()
-			return InvalidPosition
+			return
 		}
 
 		// 如果自身的Role发生了变化，直接退出，当前栈已经失效,不可以修改Raft的状态。
 		if rf.role != Leader {
 			DPrintf("Goroutine: %v, %v rf Leader role changed from Leader to %v at time %v", GetGOId(), rf.me, rf.role, time.Now().UnixMilli())
 			defer rf.mu.Unlock()
-			return InvalidPosition
+			return
 
 		}
 
@@ -1385,7 +1380,7 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 				DPrintf("Goroutine: %v, %v rf , currentTerm: %v, currentTerm: %v", GetGOId(), rf.me, rf.currentTerm, currentTerm)
 
-				return leaderCommitStartIndex
+				return
 			} else {
 				rf.mu.Unlock()
 				continue
@@ -1401,14 +1396,14 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 
 					rf.updateLeaderCommitIndex()
 					logs := append([]LogEntry(nil), rf.logs...)
-
 					// 将最新的日志进行持久化
 					rf.persist()
+
 					go rf.processMajoritySuccessAppendRequest(rf.commitIndex, rf.lastApplied, logs, rf.currentTerm)
 
 					rf.lastApplied = rf.commitIndex
 
-					return leaderCommitStartIndex
+					return
 				}
 				rf.mu.Unlock()
 			} else {
@@ -1418,13 +1413,12 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 					reSendLogCnt++
 					DPrintf("Goroutine: %v, %v rf Leader need to resend log to rf %v, index start at: %v at term %v, at time :%v, value reSendLogCnt now: %v", GetGOId(), rf.me, resp.server, rf.nextIndex[resp.server], rf.currentTerm, time.Now().UnixMilli(), reSendLogCnt)
 
-					// 因为Leader重新选为Leader时,预期是所有连接的server，都会返回false,并且返回的Term要比请求的Term小，新的Leader会首先发送[Term', no-op],Term' 是要大于任何从Follower返回的Term的。如果由于网络问题，没有得到响应呢？
 					// 如果超过大部分都要求重新传送数据，那么此时需要连同Leader的commitIndex也需要更新。
 					if reSendLogCnt >= len(rf.peers)/2+1 {
 						defer rf.mu.Unlock()
 						rf.updateLeaderCommitIndex()
 
-						return InvalidPosition
+						return
 					}
 					rf.mu.Unlock()
 					continue
@@ -1439,14 +1433,14 @@ func (rf *Raft) LeaderAppendEntries(command interface{}) int {
 					rf.currentTerm = resp.reply.Term
 					// 需要当前节点尽快去选新的Leader.
 					rf.reElectionForFollower = true
-					return InvalidPosition
+					return
 				}
 				rf.mu.Unlock()
 			}
 		}
 	}
 
-	return InvalidPosition
+	return
 }
 
 // The ticker go routine starts a new election if this peer hasn't received

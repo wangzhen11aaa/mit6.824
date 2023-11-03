@@ -67,9 +67,9 @@ type ApplyMsg struct {
 type StateMachine struct {
 	//Figure 13 Install SnapShot RPC, invoked by leader
 	// the snapshot replaces all entries up through and including this index.
-	lastIncludedIndex int
-	// term of lastIncludedIndex
-	lastIncludedTerm int
+	lastSnapshotIndex int
+	// term of lastSnapshotIndex
+	lastSnapshotTerm int
 	// Store the latest key/values.
 	kv map[interface{}]interface{}
 }
@@ -120,6 +120,16 @@ type AppendEntriesReplyWithPeerID struct {
 	server int
 }
 
+type SnapShotReplyWithPeerID struct {
+	reply  SnapShotReply
+	server int
+}
+
+type VoteRequestReplyWithPeerID struct {
+	reply  VoteRequestReply
+	server int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -133,8 +143,13 @@ type Raft struct {
 	// Lock for apply
 	applyMu sync.Mutex
 
-	// 一个标记，当是数据重传模式时，置为true
-	resendModeMap map[int]interface{}
+	// snapshot中的最后一个位置,当snapshot为空时，此值是0
+	lastSnapshotIndex int
+
+	electionTimeoutV int
+
+	// snapshot中的最后一个元素的Term,当snapshot为空时，此值没有意义。
+	lastSnapshotTerm int
 
 	// 0: follower, 1: candidate, 2. leader
 	role int
@@ -144,11 +159,6 @@ type Raft struct {
 	// True if the candidate does not win the election or lose election.
 	//reElectionForCandidateChan chan bool
 	logs []LogEntry
-
-	// rejectServer to store the failed append request.
-	rejectServer map[int]interface{}
-
-	latestSuccessfullyAppendTimeStamp int64
 
 	// Recodes the leader cost time.
 	timers []int
@@ -222,8 +232,6 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
@@ -243,13 +251,17 @@ func (rf *Raft) persist() {
 	// 否则，如果Leader在LeaderAppendEntries开始就进行persist() 会出现两个问题
 	// 1. 所有的调用都会调用persist(),那么普通的heartbeat也调用persist()这样开销很大。
 	// 2. 会出现混乱提交，比如出现一种情况，比如5个节点，Raft1 刚刚选举为Leader就断网了，那么它会继续接受Client的请求并且一直persist().此时Term为Term0。剩余节点选举出Leader Raft2 此时Term为Term1 (Term1 > Term0),集群并没有做任何Log提交，然后Raft1重启联网，从Follower->Candidate, Term0变为Term1,并且其Logs的长度比其他节点都长，此时Raft1 开始将日志Append给其他Follower,但是其实这些并没有committed,却被当做了Committed的Log。加入存在另外一个Raftx表现和Raft1一致，但是最后状态比Raft1的Term更大，那么Raftx的Log会被再Apply一次，相当于同一个位置的有不同的Log提交，导致冲突。
+
 	if rf.role == Leader {
-		e.Encode(rf.logs[:rf.commitIndex+1])
+		e.Encode(rf.logs[:rf.commitIndex-rf.lastSnapshotIndex+1])
 	} else {
 		e.Encode(rf.logs)
 	}
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	// 将snapshot的关键信息进行持久化
+	e.Encode(rf.lastSnapshotIndex)
+	e.Encode(rf.lastSnapshotTerm)
+
+	raftState := w.Bytes()
 
 	// Your code here (2C).
 	// Example:
@@ -258,7 +270,7 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.xxx)
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	rf.persister.SaveRaftState(raftState)
 }
 
 //
@@ -269,20 +281,30 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 
+	DPrintf("Goroutine %v, %v rf readPersist at time %v", GetGOId(), rf.me, time.Now().UnixMilli())
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
 	var voteFor int
 	var logs []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+
+	var lastSnapshotIndex int
+	var lastSnapshotTerm int
+
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil || d.Decode(&lastSnapshotIndex) != nil || d.Decode(&lastSnapshotTerm) != nil {
 		DPrintf("Error")
 	} else {
 		DPrintf("Goroutine: %v, %v rf readPersist currentTerm: %v, voteFor: %v, logs: %v at term %v, time %v", GetGOId(), rf.me, currentTerm, voteFor, logs, rf.currentTerm, time.Now().UnixMilli())
 		rf.currentTerm = currentTerm
 		rf.voteFor = voteFor
 		rf.logs = logs
+
+		rf.lastSnapshotIndex = lastSnapshotIndex
+		rf.lastSnapshotTerm = lastSnapshotTerm
+
 		// 用户重启之后的身份是Follower,此时需要再次选举。
 		rf.role = Follower
+
 	}
 
 	// Your code here (2C).
@@ -300,14 +322,138 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
+//获取当前存储位置的索引
+func (rf *Raft) getStoreIndexByLogIndex(logIndex int) int {
+	storeIndex := logIndex - rf.lastSnapshotIndex
+	if storeIndex < 0 {
+		return -1
+	}
+	return storeIndex
+}
+
+//获取持久化的数据
+func (rf *Raft) persistRaftState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.commitIndex)
+	e.Encode(rf.lastSnapshotTerm)
+	e.Encode(rf.lastSnapshotIndex)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	return data
+}
+
+//返回当前状态机的最后一条日志的任期和索引
+//索引是一直会增大的，但是我们的日志队列却不可能无限增大，在队列中下标0存储快照
+func (rf *Raft) getLastLogTermAndIndex() (int, int) {
+	return rf.logs[len(rf.logs)-1].Term, rf.lastSnapshotIndex + len(rf.logs) - 1
+}
+
+func (rf *Raft) getMappedIndex(straightIndex int) int {
+	return straightIndex - rf.lastSnapshotIndex
+}
+
+// 将snapshot发送到比较落后的Follower，特别是指的是它的
+func (rf *Raft) InstallSnapShot(args *SnapShotAppendArgs, reply *SnapShotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	_, currentLastLogIndex := rf.getLastLogTermAndIndex()
+
+	reply.Term = rf.currentTerm
+
+	if rf.currentTerm > args.Term {
+		return
+	} else if rf.currentTerm == args.Term {
+
+		if rf.role == Leader {
+			return
+		}
+
+		if rf.role == Follower && rf.voteFor != args.LeaderId {
+			return
+		}
+
+		rf.role = Follower
+		rf.voteFor = args.LeaderId
+		rf.reElectionForFollower = false
+		rf.lastSnapshotIndex = args.LastIncludeIndex
+		rf.lastSnapshotTerm = args.LastIncludedTerm
+
+	} else {
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm
+
+		rf.role = Follower
+		rf.voteFor = args.LeaderId
+		rf.reElectionForFollower = false
+		rf.lastSnapshotIndex = args.LastIncludeIndex
+		rf.lastSnapshotTerm = args.LastIncludedTerm
+	}
+
+	if currentLastLogIndex <= args.LastIncludeIndex {
+		rf.logs = make([]LogEntry, 1)
+	} else {
+		installLen := currentLastLogIndex - args.LastIncludeIndex
+		rf.logs = rf.logs[:installLen]
+		rf.logs[0].Cmd = nil
+	}
+
+	rf.commitIndex = args.LastIncludeIndex
+	rf.lastApplied = args.LastIncludeIndex
+
+	rf.logs[0].Term = args.LastIncludedTerm
+
+	// 应用这些
+	rf.persister.SaveStateAndSnapshot(rf.persistRaftState(), args.Data)
+}
+
+func (rf *Raft) installSnapShotToFollower(server int, args *SnapShotAppendArgs, reply *SnapShotReply, result chan SnapShotReplyWithPeerID, lastSnapShotIndex int, currentTerm int) {
+	ok := rf.peers[server].Call("Raft.InstallSnapShot", args, reply)
+	if ok {
+		rf.mu.Lock()
+
+		DPrintf("Goroutine %v ,%v rf Leader got the installSnapShotToFollower result from  %v, reply: %v \n", GetGOId(), rf.me, server, reply)
+
+		if rf.role == Leader && currentTerm >= reply.Term {
+			rf.updateNextIndexAndMatchIndex(server, lastSnapShotIndex)
+		}
+
+		rf.mu.Unlock()
+		result <- SnapShotReplyWithPeerID{reply: *reply, server: server}
+
+	} else {
+		DPrintf("Goroutine: %v, %v rf lost from leader %v \n", GetGOId(), server, args.LeaderId)
+		reply.Term = LostConnection
+		result <- SnapShotReplyWithPeerID{reply: *reply, server: server}
+	}
+}
+
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+func (rf *Raft) CondInstallSnapshot(lastIncludeTerm int, lastIncludeIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
 
+	_, lastIndex := rf.getLastLogTermAndIndex()
+
+	// 如果通过applyCh传递过来的Msg中包含的lastIncludeIndex大于现有的lastIndex,说明了当前logs已经被传送过来的snapshot覆盖，该snapshot将会被install,所以当前rf.logs已经没有必要保留了。
+	if lastIncludeIndex >= lastIndex {
+		rf.logs = make([]LogEntry, 1)
+	} else {
+		// lastIncludeIndex < lastIndex,说明需要,有一部分logs已经被installed的snapshot覆盖，需要裁剪掉。
+		instalLen := lastIncludeIndex - rf.lastSnapshotIndex
+		rf.logs = rf.logs[:instalLen]
+		rf.logs[0].Cmd = nil
+	}
+	rf.logs[0].Term = lastIncludeTerm
+
+	rf.lastSnapshotIndex, rf.lastSnapshotTerm = lastIncludeIndex, lastIncludeTerm
+	rf.persister.SaveStateAndSnapshot(rf.persistRaftState(), snapshot)
 	return true
 }
 
@@ -315,8 +461,52 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
+
+func (rf *Raft) Snapshot(index int, cmd []byte) {
 	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.lastSnapshotIndex >= index {
+		DPrintf("Goroutine%v, %v rf rejects replacing log with snapshotIndex %v as current snapshotIndex %v is larger in term %v", GetGOId(), rf.me, index, rf.lastSnapshotIndex, rf.currentTerm)
+		return
+	}
+	oldLastSnapshotIndex := rf.lastSnapshotIndex
+
+	actualIndexInLogs := rf.getStoreIndexByLogIndex(index)
+
+	rf.lastSnapshotTerm = rf.logs[actualIndexInLogs].Term
+	rf.lastSnapshotIndex = index
+
+	// 比如这一次snapshot最后一个Log所在位置是index,上一次snapshot的最后位置是oldLastSnapShotIndex.
+	rf.logs = rf.logs[index-oldLastSnapshotIndex:]
+
+	// 0位置设置为快照命令
+	rf.logs[0].Term = rf.lastSnapshotTerm
+
+	r := bytes.NewBuffer(cmd)
+	d := labgob.NewDecoder(r)
+	var cmd_ int
+	if d.Decode(&cmd_) != nil {
+		DPrintf("Error in Decode cmd")
+		rf.logs[0].Cmd = nil
+	} else {
+		rf.logs[0].Cmd = cmd_
+	}
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(index)
+	var xlog []interface{}
+	for j := 0; j <= index; j++ {
+		xlog = append(xlog, rf.logs[j])
+	}
+	e.Encode(xlog)
+
+	DPrintf("Goroutine %v, %v rf Start Snapshot end logs %v at time %v", GetGOId(), rf.me, rf.logs, time.Now().UnixMilli())
+
+	rf.persister.SaveStateAndSnapshot(rf.persistRaftState(), w.Bytes())
 
 }
 
@@ -337,7 +527,7 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 }
 
-type RequestVoteReply struct {
+type VoteRequestReply struct {
 	// currentTerm, for candidate to update itself.
 	Term int
 	// true means candidate received vote.
@@ -345,6 +535,19 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 }
 
+type SnapShotAppendArgs struct {
+	// leader's term
+	Term             int
+	LeaderId         int
+	LastIncludeIndex int
+	LastIncludedTerm int
+	Data             []byte
+}
+
+type SnapShotReply struct {
+	// currentTerm, for leader to update itself.
+	Term int
+}
 type RequestAppendEntriesArgs struct {
 	// leader's term
 	Term int
@@ -368,223 +571,92 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *RequestAppendEntriesArgs, reply *AppendEntriesReply, result chan AppendEntriesReplyWithPeerID, nextIndexToCommit int) bool {
-	// DPrintf("Goroutine %v Leader %v sendAppendEntries logs :%v to server %v at term %v, time: %v", GetGOId(), rf.me, args.Entries, server, rf.currentTerm, time.Now().UnixMilli())
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		DPrintf("Goroutine %v ,%v rf Leader got the AppendEntries result from  %v, status: %v \n", GetGOId(), rf.me, server, reply.Success)
 		// 如果Follower响应. 把nextIndex的更新放在这里的原因是，因为调用者会在收集到Majority的success之后会直接退出，导致对应的栈不能使用，从而后面的响应无法进行更新。然而，sendAppendEntries是独立的栈，可以对后面返回的结果进行更新。
 		rf.mu.Lock()
-		if reply.Success {
-			if nextIndexToCommit > rf.nextIndex[server] {
-				DPrintf("Goroutine %v, %v rf Leader (UpdateNextIndexAndMatchIndex Method), got the AppendEntries from peer %v, status: %v, nextIndexToCommit: %v \n", GetGOId(), rf.me, server, reply.Success, nextIndexToCommit)
-				// 如果Peer响应成功，那么就可以更新matchIndex和nextIndex数组。
-				rf.updateNextIndexAndMatchIndex(server, nextIndexToCommit)
-			}
-		} else {
-			DPrintf("Goroutine %v, %v Leader (UpdateFollowerNextIndex Method), got the AppendEntries from peer %v, status: %v,args: %v, reply: %v \n", GetGOId(), rf.me, server, reply.Success, args, reply)
-			// 如果Peer响应失败，
-			// 有两种情况
-			// 第一种情况是 这个Leader 遇到了更大的Term,
-			// 				reply.Term > args.Term, 这种情况需要当前节点的role从Leader->Follower。
-			// 第二种情况是，Peer需要重新传送日志,
-			//				reply.Term <= args.Term, 这种情况需要更新nextIndex值，需要下一次传送从新的位置开始发送。
-			if reply.Term <= args.Term {
-				rf.updateFollowerNextIndex(server, reply.Term)
-				// 标记reply.Term 为-1，表示是需要再次传输日志而导致的失败，这种情况Leader不会变成Follower
-				reply.Term = ReSend
+		if rf.role == Leader {
+			if reply.Success {
+				if nextIndexToCommit > rf.nextIndex[server] {
+					DPrintf("Goroutine %v, %v rf Leader (UpdateNextIndexAndMatchIndex Method), got the AppendEntries from peer %v, status: %v, nextIndexToCommit: %v \n", GetGOId(), rf.me, server, reply.Success, nextIndexToCommit)
+					rf.updateNextIndexAndMatchIndex(server, nextIndexToCommit)
+				}
+			} else {
+				DPrintf("Goroutine %v, %v Leader (UpdateFollowerNextIndex Method), got the AppendEntries from peer %v, status: %v,args: %v, reply: %v \n", GetGOId(), rf.me, server, reply.Success, args, reply)
+				// 如果Peer响应失败，
+				// 有两种情况
+				// 第一种情况是 这个Leader 遇到了更大的Term,
+				// 				reply.Term > args.Term, 这种情况需要当前节点的role从Leader->Follower。
+				// 第二种情况是，Peer需要重新传送日志,
+				//				reply.Term <= args.Term, 这种情况需要更新nextIndex值，需要下一次传送从新的位置开始发送。
+				if reply.Term <= args.Term {
+					rf.updateFollowerNextIndex(server, reply.Term)
+					// 标记reply.Term 为-1，表示是需要再次传输日志而导致的失败，这种情况Leader不会变成Follower
+					reply.Term = ReSend
+				}
 			}
 		}
 		rf.mu.Unlock()
 		result <- AppendEntriesReplyWithPeerID{reply: *reply, server: server}
-		DPrintf("Goroutine %v ,[%v] executed the AppendEntries from leader Ended %v, status: %v \n", GetGOId(), server, args.LeaderId, reply.Success)
+		DPrintf("Goroutine %v ,%v rf executed the AppendEntries from leader Ended %v, status: %v \n", GetGOId(), server, args.LeaderId, reply.Success)
 	} else {
-		DPrintf("Goroutine: %v, [%v] lost from leader %v \n", GetGOId(), server, args.LeaderId)
+		DPrintf("Goroutine: %v, %v rf lost from leader %v \n", GetGOId(), server, args.LeaderId)
 		reply.Term = LostConnection
 		result <- AppendEntriesReplyWithPeerID{reply: *reply, server: server}
-		DPrintf("Goroutine: %v, [%v] lost from leader Ended %v \n", GetGOId(), server, args.LeaderId)
+		DPrintf("Goroutine: %v, %v rf lost from leader Ended %v \n", GetGOId(), server, args.LeaderId)
 	}
 	return ok
 }
 
-func (rf *Raft) becomeFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
-	DPrintf("%v 's [current role: %v to Follower]: currentTerm changed from %v to %v, in AppendEntries for the coming request %v", rf.me, rf.role, rf.currentTerm, args.Term, args.LeaderId)
-
-	rf.currentTerm = args.Term
-	rf.role = Follower
-	rf.voteFor = args.LeaderId
-
-	rf.reElectionForFollower = false
-	rf.latestSuccessfullyAppendTimeStamp = time.Now().UnixMilli()
-
-	reply.Success = rf.consistLogCheck(args)
-	if !reply.Success {
-		if rf.commitIndex == 0 {
-			if len(rf.logs) > 0 {
-				reply.Term = rf.logs[0].Term
-			} else {
-				// Raft Server的日志第一条Log的Term不一定是1,因为本地没有日志，所以就返回1。
-				reply.Term = 1
-			}
-		} else {
-			reply.Term = rf.logs[rf.commitIndex-1].Term
-		}
-	} else {
-		reply.Term = rf.currentTerm
+// 初始化rf.nextIndex和rf.matchIndex
+func (rf *Raft) initializeNextIndexAndMatchIndex() {
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = len(rf.logs) + rf.lastSnapshotIndex
+		rf.matchIndex[i] = 0
 	}
 }
 
-// If the consistLogCheck failed, return false.(This makes the leader reduce the nextIndex for this server)
-func (rf *Raft) consistLogCheck(args *RequestAppendEntriesArgs) bool {
-	//Check whether the logs have been appended are the same with the leader. Reduction Property.
-	DPrintf("Goroutine: %v, %v rf  Begin consistLogCheck at term :%v at time %v, logs: %v, args: %v, rf.commitIndex %v, rf.lastApplied : %v", GetGOId(), rf.me, rf.currentTerm,
+// 这里直接对日志进行操作。
+func (rf *Raft) tryAppendLogs(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
+
+	DPrintf("Goroutine: %v, %v rf  Begin tryAppendLogs at term :%v at time %v, logs: %v, args: %v, rf.commitIndex %v, rf.lastApplied : %v", GetGOId(), rf.me, rf.currentTerm,
 		time.Now().UnixMilli(), rf.logs, args, rf.commitIndex, rf.lastApplied)
 
-	// 这些是特殊情况，表明当前的参数是由一个刚刚初始化的Leader发送的,这是非正常的AppendEntries Log序列。
-	if len(args.Entries) != 0 && args.PrevLogIndex == 0 && args.Entries[0].Idx != 1 {
-		DPrintf("Goroutine: %v,%v rf receive first Log from resumed Leader %v at term :%v at time %v, logs: %v", GetGOId(), rf.me, args.LeaderId, rf.currentTerm,
-			time.Now().UnixMilli(), rf.logs)
+	lastTerm, lastIndex := rf.getLastLogTermAndIndex()
 
-		if rf.commitIndex >= args.Entries[0].Idx && rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm {
-			rf.logs = rf.logs[:args.LeaderCommit-len(args.Entries)]
+	if lastIndex < args.PrevLogIndex {
+		reply.Term = lastTerm
+		reply.Success = false
+		return
+	}
+
+	mappedPrevLogIndex := rf.getMappedIndex(args.PrevLogIndex)
+	if rf.logs[mappedPrevLogIndex].Term == args.PrevLogTerm {
+		if len(args.Entries) != 0 {
+
+			rf.logs = rf.logs[:mappedPrevLogIndex+1]
 			rf.logs = append(rf.logs, args.Entries...)
 
 			rf.persist()
-			DPrintf("Goroutine: %v, %v rf  End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
-				time.Now().UnixMilli(), rf.logs)
-
-			return true
 		}
-		// 如果当前Follower还没有数据，那么也不能接受这样的第一个Log
-		return false
-	}
+		rf.commitIndex = args.LeaderCommit
 
-	// 如果传送过来的args.PrevLogIndex < 0说明，这是全部的日志集合
-	if args.PrevLogIndex < 0 {
-		rf.logs = args.Entries
-		rf.persist()
-		return true
-	}
-
-	// 如果当前logs是空的。
-	if len(rf.logs) == 0 {
-		// 并且Leader传送过来的Entries是从起始来的。即args.PrevLogIndex == -1，并且args.Entries[0].Idx == 0
-		// 那么可以直接赋值Logs到当前节点的rf.logs。
-		if args.PrevLogIndex == 0 && args.Entries[0].Idx == 1 {
-			rf.logs = append(rf.logs, args.Entries...)
-			// 当有日志新增进来就进行persist().
-			rf.persist()
-			DPrintf("Goroutine: %v, %v rf End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
-				time.Now().UnixMilli(), rf.logs)
-			return true
-		} else {
-			// 否则，还是缺少日志，需要Leader的nextIndex减去1，然后下个append周期重新发送。
-			return false
-		}
-	}
-
-	// 当出现上一个Append请求还未让Leader的nextIndex[i]生效，然而Leader的rf.commitIndex缺被更新时,
-	// 那么prevLogIndex就不是Leader唤醒后第一次发送的-1，而是Leader的commitIndex-1,而nextIndex还是Leader唤醒时的
-	// len(rf.logs)， 此时，判断日志的长度是多么重要。
-	// 当args.PrevLogIndex没有在当前server的日志中时，需要Leader对本地已知的commit的最新Term进行全面补充。
-	if len(rf.logs) != 0 && len(rf.logs)-1 < args.PrevLogIndex {
-		DPrintf("Goroutine: %v, %v rf len(rf.logs)-1 :%v < args.PrevLogIndex: %v", GetGOId(), rf.me, len(rf.logs)-1, args.PrevLogIndex)
-		return false
-	}
-
-	// 如果当前节点的下标的长度至少与Leader中已经committed长度相同。
-	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
-		// 如果args.Entries是空,那么直接返回。
-		if len(args.Entries) == 0 {
-			return false
-		}
-		DPrintf("Goroutine: %v, %v rf args.PrevLogTerm: %v != args.Entries[0].Term: %v, args.PrevLogIndex+1:%v != args.Entries[0].Idx: %v, at term: %v, time: %v ", GetGOId(), rf.me, args.PrevLogTerm, args.Entries[0].Term, args.PrevLogIndex+1, args.Entries[0].Idx, rf.currentTerm, time.Now().UnixMilli())
-		return false
-	} else {
-		// 如果args.Entries是空,那么直接返回。
-		if len(args.Entries) == 0 {
-			return true
-		}
-		if rf.commitIndex < args.LeaderCommit {
-			DPrintf("Goroutine: %v, %v rf Begin AppendLog at term :%v, rf.commitIndex: %v, at time %v, logs: %v, args: %v", GetGOId(), rf.me, rf.currentTerm, rf.commitIndex,
-				time.Now().UnixMilli(), rf.logs, args)
-			// e.g:
-			// {4 0 0 1 [{4 2 no-op}] 3}
-			// Leader发送过来的是已经commit的下一个元素。 Leader 视角的计算公式. rf.commitIndex(先于Follower的更新) + len(args.Entries) + 1 = args.LeaderCommit
-			// Leader的commitIndex和Follower的commitIndex是在两个步骤内完成的，并且Follower的commitIndex是后于Leader的commitIndex而更新的。
-			// Leader的 commitIndex 是需要Majority的Follower已经将这个位置复制到本地之后才会更新的。
-			//
-			// Leader发送过来的 args.Entries[0]是下一个位置，当前commitIndex+1.
-			// 如果args.PrevLogIndex >= rf.commitIndex，说明本节点需要对 [rf.commitIndex, rf.PrevLogIndex]的数据进行apply并且，更新
-			// args.commitIndex = args.PrevLogIndex+1.
-
-			// 这里有一个问题，就是如果当前节点是一直领先于Majority节奏进行日志复制。那么会出现一种情况，就是args.PrevLogIndex+1 < args.Entries[0].Idx.那样的话会造成下面的rf.logs[:args.PrevLogIndex+1]数量变少。
-
-			// Leader记录的此节点复制Leader日志的速度比Majority快，也就是说，当前节点有一些日志还没有被Majority复制成功。
-
-			//1059 2023/10/27 23:10:09 Goroutine: 344, 4 rf Begin AppendLog at term :3, rf.commitIndex: 1, at time 1698419409282, logs: [{1 0 no-op} {1 1 1886} {1 2 9142} {1 3 8387}], args: &{3 1 2 1 [{3 4 no-op} {3 5 1870}] 6}
-			// 说明本地commit的速度超过了Majority.
-			if args.PrevLogIndex+1 < args.Entries[0].Idx {
-				rf.logs = rf.logs[:args.Entries[0].Idx]
-				rf.logs = append(rf.logs, args.Entries...)
-			} else {
-				// Leader发送时保证args.PrevLogIndex+1 > args.Entries[0].Idx的情况不会发生。
-				if args.PrevLogIndex+1 > args.Entries[0].Idx {
-					DPrintf("not correct")
-				}
-				rf.logs = rf.logs[:args.PrevLogIndex+1]
-				rf.logs = append(rf.logs, args.Entries...)
-			}
-
-			// 当有日志新增进来就进行persist().
-			rf.persist()
-		}
-		DPrintf("Goroutine: %v,%v rf End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
-			time.Now().UnixMilli(), rf.logs)
-
-		return true
-	}
-
-}
-
-func (rf *Raft) remainFollower(args *RequestAppendEntriesArgs, reply *AppendEntriesReply) {
-
-	DPrintf("Goroutine %v, %v rf [remainFollower] response to %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, args.Term, time.Now().UnixMilli())
-	rf.reElectionForFollower = false
-	rf.voteFor = args.LeaderId
-	rf.latestSuccessfullyAppendTimeStamp = time.Now().UnixMilli()
-
-	DPrintf("Goroutine %v, %v rf before consistLogCheck: %v ", GetGOId(), rf.me, rf.logs)
-	// try Append logs
-	reply.Success = rf.consistLogCheck(args)
-	DPrintf("Goroutine %v, %v rf after consistLogCheck: %v ", GetGOId(), rf.me, rf.logs)
-	if !reply.Success {
-		// 如果日志检测失败，那么Follower需要让Leader从本地需要的commitIndex位置开始发送。
-		if rf.commitIndex == 0 {
-			// 特殊情况
-			// 如果本地还没有顺利commit过，那么说明本地的Log只有从头开始重新传输，因为可能这些没有commit的本地Log有旧数据。
-			// Leader收到之后，会查找到比Term大的最小Log,然后尝试传输给Follower.
-			reply.Term = 0
-		} else {
-			// 如果已有过commitIndex，那么就传送给Leader已知的最大已经committed的Term.
-			reply.Term = rf.logs[rf.commitIndex].Term
-		}
-	} else {
 		reply.Term = rf.currentTerm
+		reply.Success = true
+	} else {
+
+		reply.Term = Min(rf.logs[mappedPrevLogIndex].Term, args.PrevLogTerm)
+		reply.Success = false
+
+		if rf.logs[mappedPrevLogIndex].Term > args.PrevLogTerm {
+			DPrintf("Goroutine %v, %v rf fatal error, rf.logs[mappedPrevLogIndex].Term: %v > args.PrevLogTerm: %v at time %v", GetGOId(), rf.me, rf.logs[mappedPrevLogIndex].Term, args.PrevLogTerm, time.Now().UnixMilli())
+		} else {
+			DPrintf("Goroutine %v, %v rf rf.logs[mappedPrevLogIndex].Term: %v != args.PrevLogTerm: %v at time %v", GetGOId(), rf.me, rf.logs[mappedPrevLogIndex].Term, args.PrevLogTerm, time.Now().UnixMilli())
+		}
 	}
-	DPrintf("Goroutine: %v, %v rf [remainFollower] ended response to %v, reply: %v at term %v, time :%v \n", GetGOId(), rf.me, args.LeaderId, reply, args.Term, time.Now().UnixMilli())
-
-}
-
-func (rf *Raft) applySyncWithLeader(args *RequestAppendEntriesArgs, lastApplied int, commitIndex int, logs []LogEntry, currentTerm int) {
-	rf.applyMu.Lock()
-	defer rf.applyMu.Unlock()
-	var i int
-	for i = lastApplied + 1; i < commitIndex+1; i++ {
-
-		rf.applyCh <- ApplyMsg{CommandValid: false, Command: logs[i].Cmd, CommandIndex: i}
-		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, logs[i].Cmd, i+1, currentTerm, time.Now().UnixMilli())
-	}
-	DPrintf("Goroutine:%v, [Follower]%v rf applySyncWithLeader End, lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, lastApplied, i, currentTerm, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v,%v rf End AppendLog at term :%v at time %v, logs: %v", GetGOId(), rf.me, rf.currentTerm,
+		time.Now().UnixMilli(), rf.logs)
 
 }
 
@@ -592,62 +664,80 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.Term = rf.currentTerm
+	reply.Success = false
+
 	DPrintf("Goroutine: %v, in AppendEntries %v rf, rf.lastApplied: %v, rf.commitIndex: %v logs: %v, args: %v, term:%v, time:%v", GetGOId(), rf.me, rf.lastApplied, rf.commitIndex, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
 	// AppendEntires rule 1.Reply false if term < current Term
-	// 如果当前的Term 比 Leader发送过来的Term大，那么就返回自己这边比较大的Term给Leader.
+	// 如果当前的Term 比 Leader发送过来的Term大，那么就返回自己这边比较大的Term给发送Append的节点。
 	if rf.currentTerm > args.Term {
 		DPrintf("Goroutine: %v, %v rf returned false because of %v < %v at term %v at time:%v", GetGOId(), rf.me, args.Term, rf.currentTerm, rf.currentTerm, time.Now().UnixMilli())
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
-	}
-
-	if rf.currentTerm < args.Term {
-		rf.becomeFollower(args, reply)
 		return
 	}
 
 	if rf.currentTerm == args.Term {
-		// heartbeat
-		// Rule for Follower: $5.2
-		// If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate, convert to candidate.
-		if rf.role == Follower {
-			rf.remainFollower(args, reply)
+
+		if rf.role == Leader {
+			DPrintf("Goroutine: %v,Leader %v rf fatal error, encounter another Leader %v rf with same term %v", GetGOId(), rf.me, args.LeaderId, time.Now().UnixMilli())
+			return
 		}
 
-		// Rule for Candidate: $5.2
-		// If AppendEntries RPC received from new leader: convert to follower.
-		if rf.role == Candidate {
-			rf.becomeFollower(args, reply)
+		if rf.role == Follower && rf.voteFor != args.LeaderId {
+			DPrintf("Goroutine: %v, Follower %v rf fatal error, encounter another Leader %v rf with same term %v", GetGOId(), rf.me, args.LeaderId, time.Now().UnixMilli())
+			return
 		}
+
+		// 如果是Candidate或者Follower
+		DPrintf("%v 's [current role: %v to Follower]: currentTerm changed from %v to %v, in AppendEntries for the coming request %v", rf.me, rf.role, rf.currentTerm, args.Term, args.LeaderId)
+
+		rf.role = Follower
+		rf.voteFor = args.LeaderId
+		// 并且禁止自己参与下一次的选举
+		rf.reElectionForFollower = false
+
+		rf.tryAppendLogs(args, reply)
 	}
 
-	// 如果Append Log校验失败,那么直接返回，不能apply这些logs，因为这里面可能有过期的log.
-	if !reply.Success {
-		DPrintf("Goroutine: %v, %v rf will not apply logs (for append failed) between[rf.appliedIndex+1:%v, args.PrevLogIndex:%v ]at term %v at time:%v", GetGOId(), rf.me, rf.lastApplied+1, args.PrevLogIndex+1, rf.currentTerm, time.Now().UnixMilli())
+	if rf.currentTerm < args.Term {
+
+		rf.role = Follower
+		rf.currentTerm = args.Term
+		rf.voteFor = args.LeaderId
+		rf.reElectionForFollower = false
+
+		rf.tryAppendLogs(args, reply)
+	}
+
+	if rf.lastApplied < rf.lastSnapshotIndex {
+
+		rf.lastApplied = rf.lastSnapshotIndex
+		rf.commitIndex = rf.lastSnapshotIndex
 
 		return
 	}
 
-	// 1.rf.commitIndex < args.PrevLogIndex:在Follower不断从Leader那边获取日志的时候,就是这种情况。说明有新的需要committed的Log被apply.
-	// 2.rf.commitIndex >= args.PrevLogIndex,代码逻辑走到这里，这种情况不会出现，即Follower的commitIndex小于Leader的PrevLogIndex，因为是Leader的commitIndex除了在刚刚重启并选为Leader的时候，发送PrevLogIndex=0可能小于存活的Follower,其他不可能。
-	if rf.commitIndex < args.PrevLogIndex {
-		DPrintf("Goroutine: %v, %v rf will apply logs between[rf.commitIndex:%v, args.PrevLogIndex:%v) at term %v at time:%v", GetGOId(), rf.me, rf.commitIndex, args.PrevLogIndex, rf.currentTerm, time.Now().UnixMilli())
-		rf.commitIndex = args.PrevLogIndex
+	// 说明Follower的已知commitIndex小于Leader的commitIndex(即args.LeaderCommit)，此时Follower需要进行Apply.
+	if rf.lastApplied < rf.commitIndex {
+
 		// applySyncWithHeader是同步操作，时携带Lock的，这把Lock是锁Raft本身的,因为这个同步操作可能会比较耗时，所以在这里持有锁做这个事情，明显事不对的。
 		// 为了避免sync上出现out of order的情况，我们需要另外一把锁，专门用来同步apply的操作，但是不影响Raft其他的逻辑。
 
 		// 将当前rf.logs复制出一份
-		logs := append([]LogEntry(nil), rf.logs...)
-		lastApplied := rf.lastApplied
-		commitIndex := rf.commitIndex
-		// Figure 2, Rules for Servers
-		// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
-		go rf.applySyncWithLeader(args, lastApplied, commitIndex, logs, rf.me)
+		logsCp := make([]LogEntry, len(rf.logs))
+		copy(logsCp, rf.logs)
 
+		if rf.lastApplied < rf.commitIndex {
+			lastApplied := rf.getMappedIndex(rf.lastApplied)
+			commitIndex := rf.getMappedIndex(rf.commitIndex)
+			lastSnapshotIndex := rf.lastSnapshotIndex
+
+			DPrintf("Goroutine: %v, %v rf apply logs %v from %v to %v", GetGOId(), rf.me, logsCp, lastApplied, commitIndex)
+			// Figure 2, Rules for Servers
+			// If the commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
+			go rf.applyLogs(commitIndex, lastApplied, logsCp, rf.currentTerm, lastSnapshotIndex)
+		}
 		rf.lastApplied = rf.commitIndex
-
 	}
 
 }
@@ -656,96 +746,71 @@ func (rf *Raft) AppendEntries(args *RequestAppendEntriesArgs, reply *AppendEntri
 // 选举时，需要比较候选人和当前节点的日志，哪个更新。
 // 如果候选人的日志更新，那么就支持, 返回true。
 // 如果候选人的日志没有当前节点的日志新，那么就返回false。
-func (rf *Raft) consistLogCheckForVote(args *RequestVoteArgs) bool {
-	DPrintf("Goroutine: %v, %v rf consistLogCheckForVote, rf.logs: %v,args: %v at term %v, time :%v ", GetGOId(), rf.me, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
+func (rf *Raft) checkLogsInVote(args *RequestVoteArgs) bool {
+	DPrintf("Goroutine: %v, %v rf checkLogsInVote, rf.logs: %v,args: %v at term %v, time :%v ", GetGOId(), rf.me, rf.logs, args, rf.currentTerm, time.Now().UnixMilli())
 
-	// 这里需要判断(不必是同样的index下的Log).
-	// 如果 本地的 rf.logs的最后一个位置p0的Term > 候选人传递过来的最后一个位置p1的Term,那么说明候选人那边的日志有无效的写入.
-	if rf.logs[len(rf.logs)-1].Term > args.LastLogTerm {
+	lastLogTerm, lastLogIndex := rf.getLastLogTermAndIndex()
+
+	if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 		return false
-	} else if rf.logs[len(rf.logs)-1].Term == args.LastLogTerm {
-		// 如果 本地的 rf.logs的最后位置p0中的Log的Term 与 候选人传递过来的最后位置p1的Term相同，那么谁logs长度长，谁为Leader.
-		if len(rf.logs)-1 <= args.LastLogIndex {
-			return true
-		} else {
-			return false
-		}
-	} else {
-		return true
 	}
+	return true
 }
 
 // example RequestVote RPC handler.
 //
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *VoteRequestReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	DPrintf("Goroutine: %v, %v rf in requestVote, role: %v, rf.logs:%v, rf.voteFor :%v, args: %v at term %v, time: %v", GetGOId(), rf.me, rf.role, rf.logs, rf.voteFor, args, rf.currentTerm, time.Now().UnixMilli())
 
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
+
 	// RequestVote rule 1.Reply false if term < currentTerm
 	if rf.currentTerm > args.Term {
-		reply.VoteGranted = false
-
-		// 返回的Term等于较大的Term。
-		reply.Term = rf.currentTerm
-		rf.voteFor = Nobody
 		DPrintf("%v rf rejected peer %v, reason: %v's term: %v > %v's term: %v", rf.me, args.CandidateId, rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		return
-	}
+	} else if rf.currentTerm == args.Term {
+		if rf.role == Leader {
+			return
+		}
+		// 如果由于网路问题，发送了两次Vote
+		if rf.voteFor == args.CandidateId {
+			reply.VoteGranted = true
+			return
+		}
 
-	// For all servers.
-	// 2.If RPC request or response contains term T > currentTerm: set currentTerm T, convert to follower $5.1
-	// servers disregard RequestVote
-	//RPCs when they believe a current leader exists. Specifically, if a server receives a RequestVote RPC within
-	//the minimum election timeout of hearing from a cur-
-	//rent leader, it does not update its term or grant its vote.
-
-	if rf.currentTerm < args.Term {
-
-		// 返回的Term等于较大的Term。
+		if rf.voteFor != Nobody && rf.voteFor != args.CandidateId {
+			return
+		}
+	} else {
 		rf.currentTerm = args.Term
+		rf.role = Follower
 
-		if rf.consistLogCheckForVote(args) {
-			DPrintf("Goroutine: %v, %v rf [current role: %v to Follower]: currentTerm changed from %v to %v, in RequestVote for the coming request %v rf, args: %v, consistLogCheckForVote Result: %v at time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, args.Term, args.CandidateId, args, true, time.Now().UnixMilli())
+		if rf.checkLogsInVote(args) {
+			DPrintf("Goroutine: %v, %v rf [current role: %v to Follower]: currentTerm changed from %v to %v, in RequestVote for the coming request %v rf, args: %v, checkLogsInVote Result: %v at time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, args.Term, args.CandidateId, args, true, time.Now().UnixMilli())
 
-			rf.role = Follower
 			reply.VoteGranted = true
 			rf.voteFor = args.CandidateId
 			rf.reElectionForFollower = false
+
 		} else {
-			DPrintf("Goroutine: %v, %v rf [current role: %v unchanged]: currentTerm changed from %v to %v, in RequestVote for the coming request %v rf, args: %v, consistLogCheckForVote Result: %v at time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, args.Term, args.CandidateId, args, false, time.Now().UnixMilli())
+			DPrintf("Goroutine: %v, %v rf [current role: %v unchanged]: currentTerm changed from %v to %v, in RequestVote for the coming request %v rf, args: %v, checkLogsInVote Result: %v at time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, args.Term, args.CandidateId, args, false, time.Now().UnixMilli())
 			reply.VoteGranted = false
-			// 因为Candidate's Term 大于 currentTerm,但是Log没有本地全，所以，抓紧让本地节点进行选举Leader。
-			rf.role = Follower
+
 			rf.reElectionForFollower = true
 			rf.voteFor = Nobody
 		}
+
+		rf.persist()
+
 		// If raft node follows leader, then this request suppress follower's election.
 		return
 	}
 
 	// RequestVote RPC rule for receiver: 2.0 If votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote.
-	reply.Term = rf.currentTerm
-
-	if rf.voteFor == Nobody || rf.voteFor == args.CandidateId {
-		if len(rf.logs)-1 < 0 || args.LastLogIndex >= 0 && (len(rf.logs)-1 < args.LastLogIndex || len(rf.logs)-1 == args.LastLogIndex && rf.logs[args.LastLogIndex].Term <= args.LastLogTerm) {
-			DPrintf("Goroutine:%v, %v rf role changed from %v to %v, local logs: %v, args: %v", GetGOId(), rf.me, rf.role, Follower, rf.logs, args)
-			//Specifically, if a server receives a RequestVote RPC within
-			// the minimum election timeout of hearing from a cur
-			// rent leader, it does not update its term or grant its vote.
-			if rf.voteFor == Nobody {
-				rf.voteFor = args.CandidateId
-			}
-			rf.reElectionForFollower = false
-			rf.role = Follower
-			reply.VoteGranted = true
-			return
-		}
-	}
-	reply.VoteGranted = false
-
-	// Current Term is less than candidate's. Figure4. Discovers server with high term.
 
 	// Your code here (2A, 2B).
 }
@@ -779,22 +844,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, voteChannel chan RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *VoteRequestReply, voteChannel chan VoteRequestReplyWithPeerID) bool {
 	//DPrintf("%v request vote for [%v] \n", args.CandidateId, server)
 	// This is synchronized call.
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if ok {
 		if reply.VoteGranted {
-			DPrintf("Goroutine: %v, [%v]rf got vote support from %v at term %v \n", GetGOId(), args.CandidateId, server, args.Term)
+			DPrintf("Goroutine: %v, %v rf got vote support from %v at term %v \n", GetGOId(), args.CandidateId, server, args.Term)
 		} else {
-			DPrintf("Goroutine %v, [%v] rf got vote reject from %v at term %v \n", GetGOId(), args.CandidateId, server, args.Term)
+			DPrintf("Goroutine %v, %v rf got vote reject from %v at term %v \n", GetGOId(), args.CandidateId, server, args.Term)
 		}
-		voteChannel <- *reply
+		voteChannel <- VoteRequestReplyWithPeerID{reply: *reply, server: server}
 	} else {
 		// If the can not reach the server
 		//fmt.Printf("[%v] lost from %v \n", server, args.CandidateId)
 		reply.Term = LostConnection
-		voteChannel <- *reply
+		voteChannel <- VoteRequestReplyWithPeerID{reply: *reply, server: server}
+
 	}
 	return ok
 }
@@ -823,10 +889,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//rf.mu.Lock()
 	if isLeader {
 		rf.mu.Lock()
-		index = len(rf.logs)
-		rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: len(rf.logs), Cmd: command})
+		index = len(rf.logs) + rf.lastSnapshotIndex
+		rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: index, Cmd: command})
 		rf.mu.Unlock()
-		DPrintf("Method Start() Append cmd %v to Leader at index %v,at time %v", command, index, time.Now().UnixMilli())
+		DPrintf("Method Start() %v rf Append cmd %v to Leader at index %v,at time %v", rf.me, command, index, time.Now().UnixMilli())
 	}
 	return index, term, isLeader
 }
@@ -853,17 +919,9 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) initElectionRequest(rq *RequestVoteArgs) {
-	// Initially Raft's term is 0.
 	rq.Term = rf.currentTerm
 	rq.CandidateId = rf.me
-
-	// Index of the last log index.
-	rq.LastLogIndex = len(rf.logs) - 1
-	if rq.LastLogIndex == -1 {
-		rq.LastLogTerm = 0
-	} else {
-		rq.LastLogTerm = rf.logs[len(rf.logs)-1].Term
-	}
+	rq.LastLogTerm, rq.LastLogIndex = rf.getLastLogTermAndIndex()
 }
 
 func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
@@ -871,10 +929,8 @@ func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
 
 	// If the follower timeout, then we need not care about who is the leader.
 	rf.voteFor = rf.me
-	rf.latestSuccessfullyAppendTimeStamp = -1
 
 	DPrintf("Goroutine: %v, [%v] rf voted himself at %v, time: %v\n", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
-	// Release the lock, then other goroutines can modify the critical data.
 	rf.initElectionRequest(rq)
 
 	*currentTerm = rf.currentTerm
@@ -882,10 +938,8 @@ func (rf *Raft) prepareRequest(currentTerm *int, rq *RequestVoteArgs) {
 }
 
 func (rf *Raft) launchElection() {
-	// We probably should store some value on the stack, in case other goroutines change the value to stop this election, for example it has voted for other peer, during this election.
 	rf.mu.Lock()
 
-	// Double-check
 	if rf.role != Candidate {
 		defer rf.mu.Unlock()
 		return
@@ -893,56 +947,63 @@ func (rf *Raft) launchElection() {
 
 	var currentTerm int
 	rq := RequestVoteArgs{}
-	// Each reply is different from each other.
-	replies := make([]RequestVoteReply, len(rf.peers))
-	// Prepare the request
+
+	replies := make([]VoteRequestReply, len(rf.peers))
 	rf.prepareRequest(&currentTerm, &rq)
 
-	//Clear previous stale vote in the channel
-	// cnt := len(rf.voteChannel)
-	// for i := 0; i < cnt; i++ {
-	// 	<-rf.voteChannel
-	// }
-
 	rf.mu.Unlock()
-	voteChannel := make(chan RequestVoteReply, len(rf.peers)-1)
+	voteChannel := make(chan VoteRequestReplyWithPeerID, len(rf.peers)-1)
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 		DPrintf("Goroutine: %v,%v rf send to %v, rq:{Term: %v} \n", GetGOId(), rq.CandidateId, i, rq.Term)
-		// Send request asynchronously.
 		go rf.sendRequestVote(i, &rq, &replies[i], voteChannel)
 	}
-	replyLargestTerm := -1
+
 	lostConnectionCnt := 1
 	voted := 1
+	denyCnt := 0
 
-	// channel for vote
+	// 使用一个Map将这些结果收集到map中，方便使用日志分析问题，因为由于日志是由各个goroutine交叉打印，造成了很多不便。
+	logAppendResultMap := make(map[int]VoteRequestReplyWithPeerID)
+
 	for i := 0; i < len(rf.peers)-1; i++ {
-		reply := <-voteChannel
-		rf.mu.Lock()
-		DPrintf("Goroutine: %v,%v rf requestVote receive %v, at term %v, time :%v", GetGOId(), rf.me, reply, rf.currentTerm, time.Now().UnixMilli())
+		response := <-voteChannel
 
-		// 如果当前节点自身的Term有变化,说明currentTerm所在的选举已经失效。不改变当前的Raft的任何状态,
-		// 直接退出。
+		logAppendResultMap[i] = response
+
+		rf.mu.Lock()
+		DPrintf("Goroutine: %v,%v rf requestVote receive %v, total reply: %v, at term %v, time :%v", GetGOId(), rf.me, response, logAppendResultMap, rf.currentTerm, time.Now().UnixMilli())
+
 		if currentTerm != rf.currentTerm {
-			DPrintf("Goroutine: %v, %v rf Leader Term changed from %v to %v , at time %v", GetGOId(), rf.me, currentTerm, rf.currentTerm, rf.currentTerm)
 			defer rf.mu.Unlock()
+			DPrintf("Goroutine: %v, %v rf Leader Term changed from %v to %v , at time %v", GetGOId(), rf.me, currentTerm, rf.currentTerm, rf.currentTerm)
+			return
+		}
+
+		if currentTerm < response.reply.Term {
+			defer rf.mu.Unlock()
+			rf.currentTerm = response.reply.Term
+			rf.role = Follower
+			rf.voteFor = Nobody
+
+			rf.reElectionForFollower = false
+			rf.persist()
 			return
 		}
 
 		// 如果rf.role有变化,不更改当前Raft的任何状态，直接返回。
 		if rf.role != Candidate {
-			DPrintf("Goroutine: %v, %v rf changed role from 1 to %v at term : %v, time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, time.Now().UnixMilli())
 			defer rf.mu.Unlock()
+			DPrintf("Goroutine: %v, %v rf changed role from 1 to %v at term : %v, time: %v", GetGOId(), rf.me, rf.role, rf.currentTerm, time.Now().UnixMilli())
 			return
 		}
 
 		// 网络问题，拿不到Peer的返回结果,所以不需要包含Term的大小对比。
 		// 这一种情况肯定是最后从channel中获取，因为耗时太长。
-		if reply.Term == LostConnection {
+		if response.reply.Term == LostConnection {
 			lostConnectionCnt++
 
 			if lostConnectionCnt >= len(rf.peers)/2+1 {
@@ -954,7 +1015,7 @@ func (rf *Raft) launchElection() {
 			}
 		} else {
 			// Peer正常返回结果。因为reply.Term > currentTerm肯定意味着reply.VoteGranted等于false。
-			if reply.VoteGranted {
+			if response.reply.VoteGranted {
 
 				// Count the successful votes
 				voted++
@@ -965,13 +1026,14 @@ func (rf *Raft) launchElection() {
 				}
 
 			} else {
-				if replyLargestTerm < reply.Term {
-					replyLargestTerm = reply.Term
-				}
-				// 如果返回失败，并且失败原因是遇到了更大的Term,那么需要更改当前Raft的状态。
-				if replyLargestTerm > rf.currentTerm {
+				denyCnt++
+				if denyCnt >= len(rf.peers)/2+1 {
 					defer rf.mu.Unlock()
-					rf.processFailedRequest(VoteRequest, replyLargestTerm)
+
+					rf.role = Follower
+					rf.voteFor = Nobody
+					rf.reElectionForFollower = false
+
 					return
 				}
 			}
@@ -997,49 +1059,25 @@ func Min(x int, y int) int {
 	}
 }
 
-// Process the failed request condition.
-// 如果选举过程中遇到了更大的Term,那么当前节点身份变为Follower。此时并不更新当前Raft的currentTerm,
-// 当前节点的currentTerm需要在后续选举其他Candidate为Leader时，更新。
-func (rf *Raft) processFailedRequest(typ int, replyLargestTerm int) {
-
-	DPrintf("Goroutine %v, %v rf changed to Follower", GetGOId(), rf.me)
-	if typ == VoteRequest {
-		if rf.role == Candidate {
-			// Rules for Candidate: $5.2
-			// If AppendEntries RPC received from new leader: convert to follower.
-
-			if replyLargestTerm > rf.currentTerm {
-				DPrintf("[tryBecomeFollower supported by Minority] %v 's [current role: %v term : %v to Follower]: Term replied : %v at time: %v", rf.me, rf.role, rf.currentTerm, replyLargestTerm, time.Now().UnixMilli())
-			}
-
-			DPrintf("Goroutine: %v, %v rf Candidate-> Follower at term %v, time :%v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
-			//rf.voteSuccessChannel <- MinoritySupport
-			time.Sleep(time.Millisecond * 150)
-
-			rf.reElectionForFollower = false
-		}
-	}
-	rf.role = Follower
-	rf.voteFor = Nobody
-}
-
 // Process the success append entries request condition.
-func (rf *Raft) processMajoritySuccessAppendRequest(commitIndex int, lastApplied int, logs []LogEntry, currentTerm int) { ///.rejectServer map[int]interface{}, approveServer map[int]interface{}) {
-
+func (rf *Raft) applyLogs(commitIndex int, lastApplied int, logs []LogEntry, currentTerm int, lastSnapshotIndex int) {
 	// When the majority appended successfully, we update local commitIndex for the next logs to append.
 	// The leader can apply these logs safely. logs[leaderCommitStartIndex, localCommitStartIndex)
 	rf.applyMu.Lock()
 	defer rf.applyMu.Unlock()
-	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs: %v  at time %v, rf.lastApplied :%v, rf.commitIndex: %v", GetGOId(), rf.me, logs, time.Now().UnixMilli(), lastApplied, commitIndex)
-	for i := lastApplied + 1; i < commitIndex+1; i += 1 {
 
-		rf.applyCh <- ApplyMsg{CommandValid: false, Command: logs[i].Cmd, CommandIndex: i}
-		DPrintf("Goroutine:%v, %v rf apply Log(cmd: %v), index: %v at term %v, at time %v", GetGOId(), rf.me, logs[i].Cmd, i+1, currentTerm, time.Now().UnixMilli())
+	DPrintf("Goroutine: %v, %v rf[Leader] begin apply logs: %v  at time %v, rf.lastApplied :%v, rf.commitIndex: %v", GetGOId(), rf.me, logs, time.Now().UnixMilli(), lastApplied, commitIndex+1)
+
+	for i := lastApplied + 1; i < commitIndex+1; i += 1 {
+		DPrintf("logs: %v", logs)
+		if logs[i].Cmd == nil {
+			rf.applyCh <- ApplyMsg{SnapshotValid: true, Command: logs[i].Cmd, CommandIndex: i + lastSnapshotIndex}
+		} else {
+			rf.applyCh <- ApplyMsg{CommandValid: true, Command: logs[i].Cmd, CommandIndex: i + lastSnapshotIndex}
+		}
 	}
 
 	DPrintf("Goroutine:%v,[Leader] %v rf apply Log End, rf.lastApplied changed from %v to %v at term %v, at time %v", GetGOId(), rf.me, lastApplied, commitIndex, currentTerm, time.Now().UnixMilli())
-
-	// rf.lastApplied = rf.commitIndex
 
 }
 
@@ -1079,20 +1117,18 @@ func (rf *Raft) updateLeaderCommitIndex() {
 		DPrintf("auxMap: k: %v, v: %v", k, v)
 	}
 
-	for server, k := range rf.matchIndex {
-		if server != rf.me {
-			// 直接将对应map中的v+1.golang中的map默认值为0.
-			DPrintf("k: %v", k)
-			cnt[k]++
-			if v, ok := auxMap[k]; ok {
-				// 将小于k的所有的值 sk，所在cnt[sk]++
-				for _, sk := range v {
-					DPrintf("sk: %v", sk)
-					cnt[sk]++
-				}
+	for _, k := range rf.matchIndex {
+		// 直接将对应map中的v+1.golang中的map默认值为0.
+		DPrintf("k: %v", k)
+		cnt[k]++
+		if v, ok := auxMap[k]; ok {
+			// 将小于k的所有的值 sk，所在cnt[sk]++
+			for _, sk := range v {
+				DPrintf("sk: %v", sk)
+				cnt[sk]++
 			}
-
 		}
+
 	}
 	DPrintf("Goroutine: %v, %v rf Commit index in updateLeaderCommitIndex cnt: %v", GetGOId(), rf.me, cnt)
 
@@ -1103,7 +1139,7 @@ func (rf *Raft) updateLeaderCommitIndex() {
 	n = -1
 	for k, v := range cnt {
 		DPrintf("Goroutine :%v, k: %v, v:%v \n", GetGOId(), k, v)
-		if v >= (len(rf.peers) / 2) {
+		if v >= (len(rf.peers)/2 + 1) {
 			if k > n {
 				n = k
 			}
@@ -1119,21 +1155,15 @@ func (rf *Raft) updateLeaderCommitIndex() {
 // 如果此选举人被超过1/2的人支持，那么就将当前节点进行初始化。
 func (rf *Raft) processMajoritySuccessVoteRequest() {
 	rf.role = Leader
-	DPrintf("Goroutine: %v, %v rf Leader now at term %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, int(time.Now().UnixMilli())-rf.timers[rf.me])
-	rf.initializeIndexForFollowers()
+
+	DPrintf("Goroutine: %v, %v rf Leader now at term %v, rf's logs: %v, cost time %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, int(time.Now().UnixMilli())-rf.timers[rf.me])
 
 	for i := 0; i < len(rf.peers); i++ {
-		if rf.me != i {
-			rf.nextIndex[i] = len(rf.logs)
-			rf.matchIndex[i] = rf.nextIndex[i] - 1
-		}
+		rf.nextIndex[i] = len(rf.logs) + rf.lastSnapshotIndex
+		rf.matchIndex[i] = rf.nextIndex[i] - 1
 	}
 
-	//rf.voteSuccessChannel <- MajoritySupport
 	rf.mu.Unlock()
-	// First insert a on-op log into leader.
-	//go rf.LeaderAppendEntries("no-op")
-	time.Sleep(time.Millisecond * 40)
 }
 
 // Process the network failure condition
@@ -1152,12 +1182,6 @@ func (rf *Raft) prepareAppendRequest(rq *RequestAppendEntriesArgs) {
 	rq.LeaderId = rf.me
 }
 
-func (rf *Raft) leaderAppendLogLocally(command interface{}) {
-	rf.logs = append(rf.logs, LogEntry{Term: rf.currentTerm, Idx: len(rf.logs), Cmd: command})
-
-	DPrintf("Goroutine:%v, %v rf Leader appended log  at term %v", GetGOId(), rf.me, rf.currentTerm)
-}
-
 func GetGOId() int64 {
 	var (
 		buf [64]byte
@@ -1174,7 +1198,7 @@ func GetGOId() int64 {
 	return int64(id)
 }
 
-// 返回小于term的最大元素
+// 返回小于等于term的最大元素的位置
 func (rf *Raft) bfMinimumLargePos(term int) int {
 	right := len(rf.logs)
 	left := 0
@@ -1191,8 +1215,6 @@ func (rf *Raft) bfMinimumLargePos(term int) int {
 
 // 通过二分查找，找到 潜在follower返回Term的最后一个元素。
 func (rf *Raft) updateFollowerNextIndex(server int, followerExpectTerm int) {
-	// 使当前server变为resend模式.
-	rf.resendModeMap[server] = true
 
 	DPrintf("Goroutine: %v, %v rf, term: %v, logs: %v, followerExpectTerm: %v, commitIndex: %v", GetGOId(), rf.me, rf.currentTerm, rf.logs, followerExpectTerm, rf.commitIndex)
 
@@ -1203,45 +1225,16 @@ func (rf *Raft) updateFollowerNextIndex(server int, followerExpectTerm int) {
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 		return
 	}
-	// nextIndex数组中存储的是下一个需要发送的位置。所以直接拿rf.logs去访问理论上会出错的。
-	// 在 rf.logs[left, right]中使用二分法，其中left是小于followerExpectTerm的最大元素位置,right是rf.next[server]-1.
-	if rf.logs[rf.nextIndex[server]-1].Term == followerExpectTerm {
 
-		n := rf.nextIndex[server] - 1
-		// 将rf.nextIndex[server]的下一个发送位置向前位置减一。
-		// 使用二分法,[大于上一个Term的第一个元素位置,rf.nextIndex[server]-1]。设置rf.nextIndex为中间mid.
-		left := rf.bfMinimumLargePos(followerExpectTerm)
-		rf.nextIndex[server] = (left + rf.nextIndex[server]) / 2
+	prevTerm := rf.logs[rf.nextIndex[server]-1].Term
 
-		DPrintf("Goroutine: %v, %v rf, rf.nextIndex%v :changed from %v to %v term: %v, logs: %v, followerExpectTerm: %v", GetGOId(), rf.me, server, n, rf.nextIndex[server], rf.currentTerm, rf.logs, followerExpectTerm)
+	// 二分法，找到大于等于preTerm的第一个元素
+	leftPos := rf.bfMinimumLargePos(prevTerm)
 
-		rf.matchIndex[server] = rf.nextIndex[server] - 1
-		return
+	rf.nextIndex[server] = (leftPos + rf.nextIndex[server]) / 2
+	rf.matchIndex[server] = rf.nextIndex[server] - 1
 
-	} else {
-		// 如果返回的followerExpectTerm与rf.nextIndex[server]-1的Term并不相同，那么直接使用二分法，找到
-		// 下面二分查找，在rf.logs中找到刚刚好>followerExpectTerm的第一个Log的位置，作为下一条需要发送的位置。
-		right := len(rf.logs)
-		left := 0
-		for left < right {
-			mid := (left + right) / 2
-			if rf.logs[mid].Term > followerExpectTerm {
-				right = mid
-			} else {
-				// rf.logs[mid].Term <= followerExpectTerm
-				left = mid + 1
-			}
-		}
-
-		// If append log entries, update the corresponded index
-		// 找到的位置是
-
-		DPrintf("Goroutine: %v, %v rf, rf.nextIndex%v :changed from %v to %v term: %v, logs: %v, followerExpectTerm: %v", GetGOId(), rf.me, server, rf.nextIndex[server], left, rf.currentTerm, rf.logs, followerExpectTerm)
-
-		rf.nextIndex[server] = left
-		rf.matchIndex[server] = rf.nextIndex[server] - 1
-
-	}
+	DPrintf("Goroutine: %v, %v rf, rf.nextIndex%v :changed from %v to %v term: %v, logs: %v, followerExpectTerm: %v", GetGOId(), rf.me, server, leftPos, rf.nextIndex[server], rf.currentTerm, rf.logs, followerExpectTerm)
 }
 
 // Update nextIndex and matchIndex for this server.
@@ -1258,189 +1251,257 @@ func (rf *Raft) updateNextIndexAndMatchIndex(server int, nextIndexToCommit int) 
 func (rf *Raft) LeaderAppendEntries(command interface{}) {
 	rf.mu.Lock()
 
+	// 已经不是Leader
 	if rf.role != Leader {
 		defer rf.mu.Unlock()
 		return
 	}
 
+	// 保存当前raft的Term到当前栈
 	currentTerm := rf.currentTerm
 
-	rq := RequestAppendEntriesArgs{}
-	rf.prepareAppendRequest(&rq)
+	logAppendRequest := RequestAppendEntriesArgs{}
+	rf.prepareAppendRequest(&logAppendRequest)
 
-	//leaderCommitStartIndex := len(rf.logs)
+	// 保存当前raft的logs的长度到当前栈
+	_, lastIndex := rf.getLastLogTermAndIndex()
 
-	//if command != nil {
-	// First append local log
-	// If command received from client: append entry to local log. $5.2 Rules for servers: Leaders part
-	//	rf.leaderAppendLogLocally(command)
-	//}
+	logAppendRequest.LeaderCommit = rf.commitIndex
 
-	// Figure 2 AppendEntries RPC
-	// Update rq.LeaderCommit to leader's commitIndex now.
+	logAppendReplyChan := make(chan AppendEntriesReplyWithPeerID)
+	snapShotAppendReplyChan := make(chan SnapShotReplyWithPeerID)
 
-	//rq.LeaderCommit = rf.commitIndex
-	// Store current nextIndex for leader to update,when the majority appended these logs.
-	nextIndexToCommit := len(rf.logs)
-	rq.LeaderCommit = nextIndexToCommit
-	resultChan := make(chan AppendEntriesReplyWithPeerID)
-	replies := make([]AppendEntriesReply, len(rf.peers))
-	// AppendEntries to other peers.
+	logAppendReplies := make([]AppendEntriesReply, len(rf.peers))
+	snapAppendReplies := make([]SnapShotReply, len(rf.peers))
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
-			// $Figure 2 AppendEntries RPC: may send entries to more than one for efficiency. And Figure 3, Log Matching property, the log's position must be identical to all servers.
 
-			DPrintf("Goroutine: %v, %v rf in LeaderAppendEntries rf.nextIndex%v :%v, rf.commitIndex: %v, nextIndexToCommit: %v, at term %v time: %v, resendModeMap: %v", GetGOId(), rf.me, i, rf.nextIndex[i], rf.commitIndex, nextIndexToCommit, rf.currentTerm, time.Now().UnixMilli(), rf.resendModeMap)
+			DPrintf("Goroutine: %v, %v rf in LeaderAppendEntries rf.nextIndex%v :%v, rf.commitIndex: %v, nextIndexToCommit: %v, at term %v time: %v ", GetGOId(), rf.me, i, rf.nextIndex[i], rf.commitIndex, lastIndex+1, rf.currentTerm, time.Now().UnixMilli())
 
-			// 一共存在三种组合:
-			// 对于某一个server
-			//  1. 当rf.nextIndex[server]-1 < rf.commitIndex:
-			//		 当前server的Follower 落后于Majority数据的。
-			//  2. 当rf.nextIndex[server]-1 == rf.commitIndex:
-			//		 当前server的Follower, 与Majority数据同步，所以是正确的。
-			//  3. 当rf.nextIndex[server]-1 > rf.commitIndex:
-			//	  	 当前server的Follower, 超前于Majority的数据，此时 请求中的rq.PrevLogIndex+1 并不等于这一次发送给args.Entries[0].Idx，但是没有关系，提前发送过去的Log并不会被apply。因为Follower的apply动作是由 args.PrevLogIndex决定的，apply的位置不会超过 args.PrevLogIndex。
-
-			// 如果数据属于重新传输的模式，那么args.PrevLogIndex和args.Entries[0].Idx必须是相邻的,不能跳跃。
-			if _, ok := rf.resendModeMap[i]; ok {
-				rq.PrevLogIndex = rf.nextIndex[i] - 1
-				if rq.PrevLogIndex < 0 {
-					rq.PrevLogTerm = 0
-				} else {
-					rq.PrevLogTerm = rf.logs[rq.PrevLogIndex].Term
-				}
-
-				for idx := rq.PrevLogIndex + 1; idx < nextIndexToCommit; idx++ {
-					rq.Entries = append(rq.Entries, rf.logs[idx])
-				}
-
-				delete(rf.resendModeMap, i)
-			} else {
-				if rf.nextIndex[i] < rf.commitIndex {
-					rq.PrevLogIndex = rf.nextIndex[i] - 1
-				} else if rf.nextIndex[i] > rf.commitIndex {
-					rq.PrevLogIndex = rf.commitIndex
-				} else {
-					rq.PrevLogIndex = rf.commitIndex - 2
-				}
-
-				rq.PrevLogTerm = 0
-				if rq.PrevLogIndex >= 0 {
-					rq.PrevLogTerm = rf.logs[rq.PrevLogIndex].Term
-				}
-				for idx := rf.nextIndex[i]; idx < nextIndexToCommit; idx++ {
-					rq.Entries = append(rq.Entries, rf.logs[idx])
-				}
+			prevLogIndex := rf.nextIndex[i] - 1
+			if prevLogIndex < 0 {
+				prevLogIndex = 0
 			}
-			rqCopy := rq
 
-			// 如果到某个节点server follower 出现网络问题，那么Leader会以最新的rf.commitIndex以及上一次的rf.nextIndex[s]进行重复发送,这样的发送方式会被Follower拒绝，因为该Follower没有更新commitIndex,导致rf.commitIndex < args.PrevLogIndex,导致日志重新传送。
-			DPrintf("Goroutine: %v, rf [Leader] %v, logs: %v, sends AppendEntry args %v to follower %v, at term %v \n, time :%v", GetGOId(), rf.me, rf.logs, rqCopy, i, rf.currentTerm, time.Now().UnixMilli())
-			go rf.sendAppendEntries(i, &rqCopy, &replies[i], resultChan, nextIndexToCommit)
+			mappedPrevLogIndex := rf.getMappedIndex(prevLogIndex)
+
+			// 落后集群，需要InstallSnapShot
+			if mappedPrevLogIndex < 0 {
+
+				snapShotRequestArgs := SnapShotAppendArgs{}
+				snapShotRequestArgs.Term = rf.currentTerm
+				snapShotRequestArgs.LeaderId = rf.me
+				snapShotRequestArgs.LastIncludeIndex = rf.lastSnapshotIndex
+				snapShotRequestArgs.LastIncludedTerm = rf.lastSnapshotTerm
+				snapShotRequestArgs.Data = rf.persister.ReadSnapshot()
+
+				go rf.installSnapShotToFollower(i, &snapShotRequestArgs, &snapAppendReplies[i], snapShotAppendReplyChan, rf.lastSnapshotIndex+1, rf.currentTerm)
+
+			} else {
+
+				prevLogTerm := rf.logs[mappedPrevLogIndex].Term
+				logAppendRequest.PrevLogIndex = prevLogIndex
+				logAppendRequest.PrevLogTerm = prevLogTerm
+
+				if lastIndex >= logAppendRequest.PrevLogIndex+1 {
+					logAppendRequest.Entries = make([]LogEntry, lastIndex-logAppendRequest.PrevLogIndex)
+					copy(logAppendRequest.Entries, rf.logs[mappedPrevLogIndex+1:])
+				}
+
+				logAppendRequestCopy := logAppendRequest
+				DPrintf("Goroutine: %v, rf [Leader] %v, logs: %v, sends AppendEntry args %v to follower %v, at term %v \n, time :%v", GetGOId(), rf.me, rf.logs, logAppendRequest, i, rf.currentTerm, time.Now().UnixMilli())
+				go rf.sendAppendEntries(i, &logAppendRequestCopy, &logAppendReplies[i], logAppendReplyChan, lastIndex+1)
+			}
 		}
-		rq.Entries = nil
+		logAppendRequest.Entries = nil
 	}
 
-	// 记录当前的Term
+	// 更新Leader本身的nextIndex以及matchIndex.
+	rf.nextIndex[rf.me] = lastIndex + 1
+	rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
 	rf.mu.Unlock()
-	LostConnectionCnt := 1
+
+	LostConnectionCnt := 0
+	reSendLogCnt := 0
+
 	successCnt := 1
-	reSendLogCnt := 1
 
+	logAppendResultMap := make(map[int]AppendEntriesReplyWithPeerID)
+	snapShotAppendResultMap := make(map[int]SnapShotReplyWithPeerID)
+
+	// 这里需要等待 其余节点
 	for i := 0; i < len(rf.peers)-1; i++ {
+		select {
+		case logAppendResp := <-logAppendReplyChan:
+			rf.mu.Lock()
+			logAppendResultMap[i] = logAppendResp
 
-		resp := <-resultChan
-		rf.mu.Lock()
+			DPrintf("Goroutine: %v, %v rf received logAppendResponse from rf:%v, logAppendResp: %v, total reply %v, time :%v ", GetGOId(), rf.me, logAppendResp.server, logAppendResp, logAppendResultMap, time.Now().UnixMilli())
 
-		DPrintf("Goroutine: %v, %v rf received response from rf:%v, resp: %v, time :%v ", GetGOId(), rf.me, resp.server, resp, time.Now().UnixMilli())
-
-		// 如果自身的Term发生了变化,那么直接退出，因为当前的goroutine栈已经失效，不可以修改Raft的状态.
-		if currentTerm < rf.currentTerm {
-			DPrintf("Goroutine: %v, %v rf Leader term changed from %v to %v at time %v", GetGOId(), rf.me, currentTerm, rf.currentTerm, time.Now().UnixMilli())
-			defer rf.mu.Unlock()
-			return
-		}
-
-		// 如果自身的Role发生了变化，直接退出，当前栈已经失效,不可以修改Raft的状态。
-		if rf.role != Leader {
-			DPrintf("Goroutine: %v, %v rf Leader role changed from Leader to %v at time %v", GetGOId(), rf.me, rf.role, time.Now().UnixMilli())
-			defer rf.mu.Unlock()
-			return
-
-		}
-
-		if resp.reply.Term == LostConnection {
-			LostConnectionCnt++
-			DPrintf("Goroutine: %v, %v rf received timeout.\n", GetGOId(), rf.me)
-
-			if LostConnectionCnt >= len(rf.peers)/2+1 {
+			// 如果自身的Term发生了变化,那么直接退出，因为当前的goroutine栈已经失效，不可以修改Raft的状态.
+			if currentTerm < rf.currentTerm {
+				DPrintf("Goroutine: %v, %v rf Leader term changed from %v to %v at time %v", GetGOId(), rf.me, currentTerm, rf.currentTerm, time.Now().UnixMilli())
 				defer rf.mu.Unlock()
-				rf.processNetworkFailure(AppendRequest)
-
-				DPrintf("Goroutine: %v, %v rf , currentTerm: %v, currentTerm: %v", GetGOId(), rf.me, rf.currentTerm, currentTerm)
-
 				return
-			} else {
-				rf.mu.Unlock()
-				continue
 			}
-		} else {
-			// 有节点成功进行了commit。
-			if resp.reply.Success {
-				successCnt++
 
-				// The logs has committed on the majority servers.
-				if successCnt >= len(rf.peers)/2+1 {
+			// 如果从Peer返回了的比当前Term更大的Term,那么当前节点变化身份从Leader->Follower.
+
+			if logAppendResp.reply.Term > currentTerm {
+				DPrintf("Goroutine %v, %v rf changed role to Follower, term changed from rf.currentTerm: %v to logAppendResp.reply.Term: %v at time %v", GetGOId(), rf.me, rf.currentTerm, logAppendResp.reply.Term, time.Now().UnixMilli())
+				rf.role = Follower
+				rf.voteFor = Nobody
+				rf.currentTerm = logAppendResp.reply.Term
+				rf.reElectionForFollower = false
+				rf.mu.Unlock()
+				return
+			}
+
+			// 如果自身的Role发生了变化，直接退出，当前栈已经失效,不可以修改Raft的状态。
+			if rf.role != Leader {
+				DPrintf("Goroutine: %v, %v rf Leader role changed from Leader to %v at time %v", GetGOId(), rf.me, rf.role, time.Now().UnixMilli())
+				defer rf.mu.Unlock()
+				return
+
+			}
+
+			if logAppendResp.reply.Term == LostConnection {
+				LostConnectionCnt++
+				DPrintf("Goroutine: %v, %v rf received timeout.\n", GetGOId(), rf.me)
+
+				if LostConnectionCnt >= len(rf.peers)/2+1 {
 					defer rf.mu.Unlock()
+					rf.processNetworkFailure(AppendRequest)
 
-					rf.updateLeaderCommitIndex()
-					logs := append([]LogEntry(nil), rf.logs...)
-					// 将最新的日志进行持久化
-					rf.persist()
-
-					go rf.processMajoritySuccessAppendRequest(rf.commitIndex, rf.lastApplied, logs, rf.currentTerm)
-
-					rf.lastApplied = rf.commitIndex
+					DPrintf("Goroutine: %v, %v rf , currentTerm: %v, currentTerm: %v", GetGOId(), rf.me, rf.currentTerm, currentTerm)
 
 					return
+				} else {
+					rf.mu.Unlock()
+					continue
 				}
-				rf.mu.Unlock()
 			} else {
-				// 失败只有两种情况，第一需要重新传输数据,此时失败标记为Resend，第二，节点返回中出现了更大的Term.
-				// 判断是否是因为需要重新发送日志而失败。
-				if resp.reply.Term == ReSend {
-					reSendLogCnt++
-					DPrintf("Goroutine: %v, %v rf Leader need to resend log to rf %v, index start at: %v at term %v, at time :%v, value reSendLogCnt now: %v", GetGOId(), rf.me, resp.server, rf.nextIndex[resp.server], rf.currentTerm, time.Now().UnixMilli(), reSendLogCnt)
+				// 有节点成功进行了commit。
+				if logAppendResp.reply.Success {
+					successCnt++
 
-					// 如果超过大部分都要求重新传送数据，那么此时需要连同Leader的commitIndex也需要更新。
-					if reSendLogCnt >= len(rf.peers)/2+1 {
+					// The logs has committed on the majority servers.
+					if successCnt >= len(rf.peers)/2+1 {
 						defer rf.mu.Unlock()
+
 						rf.updateLeaderCommitIndex()
+						// 将最新的日志进行持久化
+						rf.persist()
+
+						if rf.lastApplied < rf.lastSnapshotIndex {
+							return
+						}
+
+						logsCp := append([]LogEntry(nil), rf.logs...)
+
+						commitIndex := rf.getMappedIndex(rf.commitIndex)
+						appliedIndex := rf.getMappedIndex(rf.lastApplied)
+
+						lastSnapshotIndex := rf.lastSnapshotIndex
+
+						DPrintf("Goroutine: %v, leader %v rf apply logs %v from %v to %v", GetGOId(), rf.me, logsCp, appliedIndex, commitIndex)
+
+						go rf.applyLogs(commitIndex, appliedIndex, logsCp, rf.currentTerm, lastSnapshotIndex)
+
+						rf.lastApplied = rf.commitIndex
 
 						return
 					}
 					rf.mu.Unlock()
+				} else {
+					// 失败只有两种情况，第一需要重新传输数据,此时失败标记为Resend，第二，节点返回中出现了更大的Term.
+					// 判断是否是因为需要重新发送日志而失败。
+					if logAppendResp.reply.Term == ReSend {
+						reSendLogCnt++
+						DPrintf("Goroutine: %v, %v rf Leader need to resend log to rf %v, index start at: %v at term %v, at time :%v, value reSendLogCnt now: %v", GetGOId(), rf.me, logAppendResp.server, rf.nextIndex[logAppendResp.server], rf.currentTerm, time.Now().UnixMilli(), reSendLogCnt)
+
+						// 如果超过大部分都要求重新传送数据，那么此时需要连同Leader的commitIndex也需要更新。
+						if reSendLogCnt >= len(rf.peers)/2+1 {
+							defer rf.mu.Unlock()
+							rf.updateLeaderCommitIndex()
+							return
+						}
+						rf.mu.Unlock()
+						continue
+					}
+					rf.mu.Unlock()
+				}
+			}
+		// snapshot是已经committed的数据压缩。
+		case snapShotAppendResp := <-snapShotAppendReplyChan:
+
+			rf.mu.Lock()
+			snapShotAppendResultMap[i] = snapShotAppendResp
+
+			DPrintf("Goroutine: %v, %v rf received logAppendResponse from rf:%v, snapShotAppendResp: %v, total reply %v, time :%v ", GetGOId(), rf.me, snapShotAppendResp.server, snapShotAppendResp, snapShotAppendResultMap, time.Now().UnixMilli())
+
+			if snapShotAppendResp.reply.Term == LostConnection {
+				LostConnectionCnt++
+				DPrintf("Goroutine: %v, %v rf received timeout.\n", GetGOId(), rf.me)
+
+				if LostConnectionCnt >= len(rf.peers)/2+1 {
+					defer rf.mu.Unlock()
+					rf.processNetworkFailure(AppendRequest)
+
+					DPrintf("Goroutine: %v, %v rf , currentTerm: %v, currentTerm: %v", GetGOId(), rf.me, rf.currentTerm, currentTerm)
+
+					return
+				} else {
+					rf.mu.Unlock()
 					continue
 				}
+			}
 
-				// 如果从Peer返回了的比当前Term更大的Term,那么当前节点变化身份从Leader->Follower.
-				if resp.reply.Term > currentTerm {
-					DPrintf("Goroutine %v, %v rf changed role to Follower, term changed from rf.currentTerm: %v to resp.reply.Term: %v at time %v", GetGOId(), rf.me, rf.currentTerm, resp.reply.Term, time.Now().UnixMilli())
-					defer rf.mu.Unlock()
-					rf.role = Follower
-					rf.voteFor = Nobody
-					rf.currentTerm = resp.reply.Term
-					// 需要当前节点尽快去选新的Leader.
-					rf.reElectionForFollower = true
+			if snapShotAppendResp.reply.Term > currentTerm {
+				DPrintf("Goroutine %v, %v rf changed role to Follower, term changed from rf.currentTerm: %v to logAppendResp.reply.Term: %v at time %v", GetGOId(), rf.me, rf.currentTerm, snapShotAppendResp.reply.Term, time.Now().UnixMilli())
+				rf.role = Follower
+				rf.voteFor = Nobody
+				rf.currentTerm = snapShotAppendResp.reply.Term
+				rf.reElectionForFollower = false
+				rf.mu.Unlock()
+				return
+			}
+			// 这里也算作成功append数据的一次请求。
+			successCnt++
+			// The logs has committed on the majority servers.
+			if successCnt >= len(rf.peers)/2+1 {
+				defer rf.mu.Unlock()
+				rf.updateLeaderCommitIndex()
+				// 将最新的日志进行持久化
+				rf.persist()
+
+				logsCp := make([]LogEntry, len(rf.logs))
+				copy(logsCp, rf.logs)
+
+				if rf.lastApplied < rf.lastSnapshotIndex {
 					return
 				}
-				rf.mu.Unlock()
+
+				if rf.lastApplied < rf.commitIndex {
+					commitIndex := rf.getMappedIndex(rf.commitIndex)
+					appliedIndex := rf.getMappedIndex(rf.lastApplied)
+					lastSnapshotIndex := rf.lastSnapshotIndex
+
+					DPrintf("Goroutine: %v, leader %v rf apply logs %v from %v to %v", GetGOId(), rf.me, logsCp, appliedIndex, commitIndex)
+
+					go rf.applyLogs(commitIndex, appliedIndex, logsCp, rf.currentTerm, lastSnapshotIndex)
+
+					rf.lastApplied = rf.commitIndex
+				}
+
+				return
 			}
+			rf.mu.Unlock()
 		}
+
 	}
 
-	return
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -1452,7 +1513,7 @@ func (rf *Raft) ticker() {
 	// outs are unlikely to cause unnecessary leader changes and
 	// will still provide good availability.
 	// 如果选举时长太短，会导致过多的选举产生。
-	electionTimeoutV := 1000
+
 	// 如果heartbeatTimeout比较小，会导致日志可能重复发送。
 	heartbeatTimeoutV := 40
 
@@ -1465,19 +1526,21 @@ func (rf *Raft) ticker() {
 		case Leader:
 			rf.mu.Unlock()
 			<-time.After(time.Duration(heartbeatTimeoutV)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(10)+int32(rf.me)*5))
-			// nil means heartbeat
+			// 发起一次信息同步或者数据传输
 			go rf.LeaderAppendEntries(nil)
 
 		case Follower:
 			rf.mu.Unlock()
 
-			<-time.After(time.Duration(time.Duration(electionTimeoutV)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(50)+int32(rf.me)*5)))
+			<-time.After(time.Duration(time.Duration(rf.electionTimeoutV)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(50)+int32(rf.me)*5)))
 
 			rf.mu.Lock()
+			// 选举周期内没有被阻止发起选举。
 			if rf.reElectionForFollower {
 				DPrintf("Goroutine: %v, %v rf changed to Candidate now ,term %v, at time %v", GetGOId(), rf.me, rf.currentTerm, time.Now().UnixMilli())
 				rf.role = Candidate
 			} else {
+				// 选举周期内被阻止发起选举。
 				rf.reElectionForFollower = true
 			}
 			rf.mu.Unlock()
@@ -1485,6 +1548,7 @@ func (rf *Raft) ticker() {
 		case Candidate:
 			rf.mu.Unlock()
 			rf.timers[rf.me] = int(time.Now().UnixMilli())
+			// 发起选举
 			go rf.launchElection()
 
 			rf.mu.Lock()
@@ -1493,7 +1557,8 @@ func (rf *Raft) ticker() {
 			rf.lastApplied = 0
 
 			rf.mu.Unlock()
-			<-time.After(time.Duration(time.Duration(electionTimeoutV/3)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(50)+int32(rf.me)*5)))
+			// 每隔一段时间Candidate会重新发起选举。
+			<-time.After(time.Duration(time.Duration(rf.electionTimeoutV/3)*time.Millisecond + time.Millisecond*time.Duration(r1.Int31n(50)+int32(rf.me)*5)))
 
 		}
 
@@ -1508,18 +1573,6 @@ func (rf *Raft) ticker() {
 /// Initialize the channels used by raft.
 func (rf *Raft) initializeChannels() {
 	rf.voteSuccessChannel = make(chan int)
-}
-
-/// Only for Leaders
-// Figure 2 on State volatile state on leaders,
-func (rf *Raft) initializeIndexForFollowers() {
-	for i := 0; i < len(rf.peers); i++ {
-		if rf.me != i {
-			// The next position append to follower.
-			rf.nextIndex[i] = len(rf.logs)
-			rf.matchIndex[i] = rf.nextIndex[i] - 1
-		}
-	}
 }
 
 //
@@ -1542,8 +1595,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// each raft service starts as a follower.
 	rf.role = Follower
 
-	rf.resendModeMap = make(map[int]interface{})
-
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
@@ -1557,19 +1608,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.minimumElectionTimeDelta = 150
 
-	rf.latestSuccessfullyAppendTimeStamp = 0
-
-	rf.rejectServer = make(map[int]interface{})
 	rf.initializeChannels()
 
+	// 当创建Raft使，logs中就有一条LogEntry.
 	rf.logs = append(rf.logs, LogEntry{Term: 0})
 
+	// 当Raft重新启动时，会从persist中读取之前保留的状态。
 	// Your initialization code here (2A, 2B, 2C).
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	rf.electionTimeoutV = 150
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+
+	rf.initializeNextIndexAndMatchIndex()
+
 	// start ticker goroutine to start elections
 	go rf.ticker()
 

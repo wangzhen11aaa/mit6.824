@@ -167,6 +167,7 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.begin("Test (2B): basic agreement")
 
 	iters := 3
+	// 启动3个server
 	for index := 1; index < iters+1; index++ {
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
@@ -813,7 +814,7 @@ func TestFigure82C(t *testing.T) {
 			}
 		}
 	}
-
+	DPrintf("Goroutine: %v, after for loop", GetGOId())
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i, cfg.applier)
@@ -821,7 +822,8 @@ func TestFigure82C(t *testing.T) {
 		}
 	}
 
-	cfg.one(rand.Int(), servers, true)
+	DPrintf("Goroutine: rf last test 8888888")
+	cfg.one(8888888, servers, true)
 
 	cfg.end()
 }
@@ -910,6 +912,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	cfg.end()
 }
 
+// Unreliable 表示，在整个测试系统中增加网络延迟等随机的变量。
 func internalChurn(t *testing.T, unreliable bool) {
 
 	servers := 5
@@ -943,6 +946,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 					index1, _, ok1 := rf.Start(x)
 					if ok1 {
 						ok = ok1
+						DPrintf("rf %v index1 : %v, data: %v", i, index1, x)
 						index = index1
 					}
 				}
@@ -958,6 +962,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 								values = append(values, x)
 							}
 						} else {
+							DPrintf("xx: %v, ok: %v", xx, ok)
 							cfg.t.Fatalf("wrong command type")
 						}
 						break
@@ -978,23 +983,33 @@ func internalChurn(t *testing.T, unreliable bool) {
 		go cfn(i, cha[i])
 	}
 
+	// 这个测试一共运行20次,每次间隔700ms。
 	for iters := 0; iters < 20; iters++ {
 		if (rand.Int() % 1000) < 200 {
+			// 随机选取一个节点,然后将其断开连接。 1/5的概率会断开。
 			i := rand.Int() % servers
+			DPrintf("Server %v disconnected", i)
 			cfg.disconnect(i)
 		}
 
 		if (rand.Int() % 1000) < 500 {
 			i := rand.Int() % servers
+			// 随机选取一个节点，1/2的概率
+			// 如果当前节点i，已经crash，那么先启动这个节点。
 			if cfg.rafts[i] == nil {
+				DPrintf("Server %v restart", i)
 				cfg.start1(i, cfg.applier)
 			}
+			//将该节点连入网.
+			DPrintf("Server %v connected", i)
 			cfg.connect(i)
 		}
 
 		if (rand.Int() % 1000) < 200 {
+			// 随机选取一个节点，如果该节点正常运行，那么就让该节点直接crash。1/5的概率。
 			i := rand.Int() % servers
 			if cfg.rafts[i] != nil {
+				DPrintf("Server %v crashed", i)
 				cfg.crash1(i)
 			}
 		}
@@ -1003,9 +1018,11 @@ func internalChurn(t *testing.T, unreliable bool) {
 		// keep up, but not so infrequent that everything has settled
 		// down from one change to the next. Pick a value smaller than
 		// the election timeout, but not hugely smaller.
+		DPrintf("Churn next in %v milliseconds", RaftElectionTimeout*7/10)
 		time.Sleep((RaftElectionTimeout * 7) / 10)
 	}
 
+	// 如果Leader crash如何保证 在节点在失去Leader的情况下，不进行选举。
 	time.Sleep(RaftElectionTimeout)
 	cfg.setunreliable(false)
 	for i := 0; i < servers; i++ {
@@ -1027,7 +1044,8 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	time.Sleep(RaftElectionTimeout)
-
+	// 这里要求从1到最后的index之间不能有no-op这样的命令出现在从[1,lastIndex]之间。
+	DPrintf("Last test will be cfg.one()")
 	lastIndex := cfg.one(rand.Int(), servers, true)
 
 	really := make([]int, lastIndex+1)
@@ -1036,6 +1054,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 		if vi, ok := v.(int); ok {
 			really = append(really, vi)
 		} else {
+			DPrintf("v : %v, index: %v", v, index)
 			t.Fatalf("not an int")
 		}
 	}
@@ -1068,6 +1087,10 @@ const MAXLOGSIZE = 2000
 func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
 	iters := 30
 	servers := 3
+	// true 是最后一个参数，代表需要使用snapshot.
+	// 这里将可以处理snapshot的applier func的地址传送了make_config,而make_config最终会用来使用传递从applyCh中传递给Client的snapshot。
+	// 这也就是说，支持snapshot了。
+	// 并且applierSnap 会在raft向applyCh发送snapShot的消息时,判断CondInstallSnapshot函数返回是否是true，来对msg中的snapshot进行持久化。
 	cfg := make_config(t, servers, !reliable, true)
 	defer cfg.cleanup()
 
@@ -1118,6 +1141,8 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	}
 	cfg.end()
 }
+
+//func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
 
 func TestSnapshotBasic2D(t *testing.T) {
 	snapcommon(t, "Test (2D): snapshots basic", false, true, false)

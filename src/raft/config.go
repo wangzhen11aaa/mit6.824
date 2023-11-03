@@ -142,15 +142,15 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("cmd: %v ,%v: log %v; server %v\n", v, i, cfg.logs[i], cfg.logs[j])
+			//DPrintf("cmd: %v ,current server: %v: log %v \n, committed server :%v\n", v, i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
-	log.Printf("Goroutine: %v, cfg.logs[i]: %v", GetGOId(), cfg.logs[i])
+	//DPrintf("Goroutine: %v, cfg.logs[%v]: %v", GetGOId(), i, cfg.logs[i])
 	_, prevok := cfg.logs[i][m.CommandIndex-1]
-	log.Printf("Goroutine: %v ,raft %v Store cmd %v ,cmd's index: %v, prevok: %v", GetGOId(), i, v, m.CommandIndex-1, prevok)
+	//DPrintf("Goroutine: %v ,raft %v Store cmd %v ,cmd's index: %v, prevok: %v", GetGOId(), i, v, m.CommandIndex-1, prevok)
 	cfg.logs[i][m.CommandIndex] = v
 	if m.CommandIndex > cfg.maxIndex {
 		cfg.maxIndex = m.CommandIndex
@@ -188,8 +188,9 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	lastApplied := 0
 	for m := range applyCh {
 		if m.SnapshotValid {
-			//DPrintf("Installsnapshot %v %v\n", m.SnapshotIndex, lastApplied)
+			DPrintf("Installsnapshot %v %v\n", m.SnapshotIndex, lastApplied)
 			cfg.mu.Lock()
+			// 判断是否需要将这些Log进行验证。请求Raft中的CondInstallSnapshot方法,如果是true的话。
 			if cfg.rafts[i].CondInstallSnapshot(m.SnapshotTerm,
 				m.SnapshotIndex, m.Snapshot) {
 				cfg.logs[i] = make(map[int]interface{})
@@ -199,12 +200,13 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 				if d.Decode(&v) != nil {
 					log.Fatalf("decode error\n")
 				}
+				// 测试者通过applyCh传送过来的最后一个位置的Log保存在cfg.logs[i]中用于测试。测试过程，即向集群写入一个数值，然后在一段时间内是否都被apply。
 				cfg.logs[i][m.SnapshotIndex] = v
 				lastApplied = m.SnapshotIndex
 			}
 			cfg.mu.Unlock()
 		} else if m.CommandValid && m.CommandIndex > lastApplied {
-			//DPrintf("apply %v lastApplied %v\n", m.CommandIndex, lastApplied)
+			DPrintf("server %v apply %v lastApplied %v\n", i, m.CommandIndex, lastApplied)
 			cfg.mu.Lock()
 			err_msg, prevok := cfg.checkLogs(i, m)
 			cfg.mu.Unlock()
@@ -217,7 +219,9 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 				// keep reading after error so that Raft doesn't block
 				// holding locks...
 			}
+			// 每隔10条就会调用对应raft server的Snapshot 方法进行snapshot。由service发起。
 			lastApplied = m.CommandIndex
+			// 如果下一条是第十条Log，那么对当前rf.logs截止到m.CommandIndex进行snapshot.
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -230,7 +234,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			// commands. Old command may never happen,
 			// depending on the Raft implementation, but
 			// just in case.
-			// DPrintf("Ignore: Index %v lastApplied %v\n", m.CommandIndex, lastApplied)
+			DPrintf("Ignore: Index %v lastApplied %v\n", m.CommandIndex, lastApplied)
 
 		}
 	}

@@ -1,0 +1,4 @@
+{"Key":"filename","Value":"text.txt"}
+{"Key":"filename_length","Value":"8"}
+{"Key":"string_length","Value":"3"}
+{"Key":"contant","Value":"xyzzy"}

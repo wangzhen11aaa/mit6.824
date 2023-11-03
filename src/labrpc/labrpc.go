@@ -223,6 +223,7 @@ func (rn *Network) processReq(req reqMsg) {
 	enabled, servername, server, reliable, longreordering := rn.readEndnameInfo(req.endname)
 
 	if enabled && servername != nil && server != nil {
+		// 如果当前节点存活，那么开启不稳定,意味着会使当前请求有0-27ms的延迟,增大了后发出的requestL 先被处理 或者先返回 的情况。
 		if reliable == false {
 			// short delay
 			ms := (rand.Int() % 27)
@@ -230,6 +231,7 @@ func (rn *Network) processReq(req reqMsg) {
 		}
 
 		if reliable == false && (rand.Int()%1000) < 100 {
+			// 并且有1/10的概率会丢失请求，或者返回。
 			// drop the request, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
 			return
@@ -255,6 +257,7 @@ func (rn *Network) processReq(req reqMsg) {
 			select {
 			case reply = <-ech:
 				replyOK = true
+				//如果超过100ms就会判断节点是否还存活，如果节点已经crash，那么将此节点的请求/发送数据丢弃。
 			case <-time.After(100 * time.Millisecond):
 				serverDead = rn.isServerDead(req.endname, servername, server)
 				if serverDead {
@@ -272,7 +275,7 @@ func (rn *Network) processReq(req reqMsg) {
 		// into the old Persister. config.go is careful to call
 		// DeleteServer() before superseding the Persister.
 		serverDead = rn.isServerDead(req.endname, servername, server)
-
+		// req.ReplyCh就是sendVoteRequest或者SendAppendEntries中的管道，用于从这里接受数据。
 		if replyOK == false || serverDead == true {
 			// server was killed while we were waiting; return error.
 			req.replyCh <- replyMsg{false, nil}
